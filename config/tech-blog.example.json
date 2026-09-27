@@ -1,0 +1,141 @@
+{
+  "applicationName": "Dex Tech Blog",
+  "dexWebUrl": "http://127.0.0.1:8802",
+  "languageModel": {
+    "provider": "gemini",
+    "interpretRequest": {
+      "model": "gemini-3.5-flash-lite",
+      "maxOutputTokens": 8192
+    },
+    "summarizeRepository": {
+      "model": "gemini-3.5-flash-lite",
+      "maxOutputTokens": 16384
+    },
+    "synthesizeResearch": {
+      "model": "gemini-3.5-flash-lite",
+      "maxOutputTokens": 16384
+    },
+    "draftBlogPost": {
+      "model": "gemini-3.5-flash-lite",
+      "maxOutputTokens": 32768
+    },
+    "draftNewsletter": {
+      "model": "gemini-3.5-flash-lite",
+      "maxOutputTokens": 16384
+    }
+  },
+  "research": {
+    "defaultLookbackDays": 7,
+    "maxLookbackDays": 90,
+    "maxRepositoriesPerRequest": 5,
+    "maxMergedPullRequestsPerRepository": 30,
+    "maxPullRequestsWithFileDetails": 10,
+    "maxFilesPerPullRequest": 40,
+    "maxCommitsPerRepository": 60,
+    "maxPatchCharactersPerFile": 1500,
+    "maxEvidenceCharactersPerRepository": 60000,
+    "repositories": [
+      {
+        "owner": "superdurable",
+        "name": "dex",
+        "description": "Dex durable execution: server, SDKs (Go, Python, Java, TypeScript, Rust), dexcli, Dex Web, examples, and docs.",
+        "topics": [
+          "durable execution",
+          "flows",
+          "sdk",
+          "dex web",
+          "cli",
+          "server"
+        ],
+        "pathHints": [
+          "server/",
+          "sdk-go/",
+          "sdk-python/",
+          "sdk-typescript/",
+          "sdk-java/",
+          "sdk-rust/",
+          "cli/",
+          "web/",
+          "docs/"
+        ]
+      },
+      {
+        "owner": "superdurable",
+        "name": "dex-connectors-library",
+        "description": "Official Dex connectors (Slack, Gmail, Google Sheets, GitHub, OpenAI, HTTP), the connector SDK, manifests, and code generation.",
+        "topics": [
+          "connectors",
+          "integrations",
+          "triggers",
+          "connector sdk"
+        ],
+        "pathHints": [
+          "connectors/",
+          "sdkgo/",
+          "sdk/",
+          "cmd/connectorctl/",
+          "docs/"
+        ]
+      },
+      {
+        "owner": "superdurable",
+        "name": "dex-skills",
+        "description": "Official Dex coding-agent skills: dex-sdk, dex-app-builder, and dex-connector-contributor.",
+        "topics": [
+          "agent skills",
+          "ai coding",
+          "developer experience"
+        ],
+        "pathHints": [
+          "dex-sdk/",
+          "dex-app-builder/",
+          "dex-connector-contributor/"
+        ]
+      },
+      {
+        "owner": "superdurable",
+        "name": "dex-template-basic-process",
+        "description": "Go and React template for Dex process applications with Dex Web v2.",
+        "topics": [
+          "templates",
+          "process applications",
+          "dex web"
+        ],
+        "pathHints": [
+          "internal/",
+          "web/",
+          "openapi/"
+        ]
+      }
+    ]
+  },
+  "blog": {
+    "siteName": "Dex Engineering Blog",
+    "author": "The Dex team",
+    "styleGuide": "Write for experienced engineers. Be concrete and technically precise, explain how things work, show short code where it clarifies, and avoid marketing language.",
+    "publicBaseUrl": "",
+    "artifactDirectory": "artifacts"
+  },
+  "newsletter": {
+    "subscriberSheet": {
+      "spreadsheetId": "",
+      "tab": "",
+      "range": "A:B"
+    },
+    "emailColumnHeader": "email",
+    "statusColumnHeader": "status",
+    "unsubscribedStatusValues": [
+      "unsubscribed",
+      "opted-out",
+      "bounced"
+    ],
+    "maxRecipients": 500,
+    "footer": "You are receiving this because you subscribed to Dex engineering updates."
+  },
+  "review": {
+    "required": true,
+    "reminderInterval": "72h0m0s",
+    "maxReminders": 1,
+    "maxRevisions": 3
+  }
+}

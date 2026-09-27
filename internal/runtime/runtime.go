@@ -1,0 +1,401 @@
+// Package runtime composes the tech blog newsletter Process: configuration,
+// connector connections, Flows, the Dex Worker and Client, and the Slack
+// request Trigger.
+package runtime
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/superdurable-apps/dex-newsletter/internal/techblog"
+	"github.com/superdurable-apps/dex-newsletter/internal/techblog/config"
+	github "github.com/superdurable/dex-connectors-library/connectors/github"
+	"github.com/superdurable/dex-connectors-library/connectors/google/gemini"
+	"github.com/superdurable/dex-connectors-library/connectors/google/gmail"
+	"github.com/superdurable/dex-connectors-library/connectors/google/spreadsheet"
+	"github.com/superdurable/dex-connectors-library/connectors/slack"
+	"github.com/superdurable/dex-connectors-library/sdkgo"
+	"github.com/superdurable/dex-connectors-library/sdkgo/localconfig"
+	"github.com/superdurable/dex/blob-cache-go/blobcache"
+	"github.com/superdurable/dex/sdk-go/dex"
+)
+
+// ProcessConfigurationFileEnvironmentVariable names the optional process
+// configuration file. Without it the built-in defaults are used.
+const ProcessConfigurationFileEnvironmentVariable = "TECH_BLOG_CONFIG_FILE"
+
+// Runtime owns the Dex Worker, Client, blob cache, and Slack Trigger runner.
+type Runtime struct {
+	configuration config.ProcessConfiguration
+	logger        *slog.Logger
+	worker        *dex.Worker
+	client        *dex.Client
+	cache         *blobcache.Cache
+	triggerRunner *slack.MessageTriggerRunner
+	stopTriggers  context.CancelFunc
+	triggersDone  chan struct{}
+	closeOnce     sync.Once
+}
+
+// New loads configuration and connections and constructs every component. A
+// missing connection or Trigger binding is logged, not fatal, so Dex Web can
+// show what still needs configuring.
+func New(logger *slog.Logger) (*Runtime, error) {
+	inputs, err := loadProcessInputs(logger)
+	if err != nil {
+		return nil, err
+	}
+	configuration, store, connections := inputs.configuration, inputs.store, inputs.connections
+	artifactStore, err := techblog.NewDirectoryBlogArtifactStore(configuration.Blog.ArtifactDirectory)
+	if err != nil {
+		return nil, err
+	}
+	languageModel := techblog.NewLanguageModelGenerationFlow(connections.gemini)
+	research := techblog.NewRepositoryChangeResearchFlow(configuration, connections.github, languageModel)
+	newsletter := techblog.NewTechBlogNewsletterFlow(techblog.TechBlogNewsletterFlowDependencies{
+		Configuration:           configuration,
+		SlackConnection:         connections.slack,
+		GoogleSheetsConnection:  connections.sheets,
+		GmailConnection:         connections.gmail,
+		SubscriberSheet:         loadSubscriberSheet(store, configuration, logger),
+		BlogArtifactStore:       artifactStore,
+		LanguageModelGeneration: languageModel,
+		RepositoryResearch:      research,
+	})
+	registry, err := dex.NewRegistry([]dex.Flow{newsletter, research, languageModel})
+	if err != nil {
+		return nil, fmt.Errorf("register tech blog Flows: %w", err)
+	}
+	cache, err := blobcache.New(&blobcache.Config{
+		Dir: environment("DEX_BLOB_CACHE_DIR", filepath.Join(os.TempDir(), "dex-tech-blog-blobs")), MaxBytes: 1 << 30, Logger: logger,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create Dex blob cache: %w", err)
+	}
+	flowServiceAddress := environment("DEX_FLOW_SERVICE_ADDRESS", "127.0.0.1:8801")
+	worker, err := dex.NewWorker(registry, cache, dex.WorkerOptions{
+		BindAddress:        environment("DEX_WORKER_BIND_ADDRESS", "127.0.0.1:8811"),
+		WorkerTarget:       dex.WorkerTarget{Address: environment("DEX_WORKER_TARGET", "127.0.0.1:8811")},
+		FlowServiceAddress: flowServiceAddress, Logger: logger,
+	})
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("create Dex Worker: %w", err), cache.Close())
+	}
+	client, err := dex.NewClient(registry, cache, dex.ClientOptions{
+		FlowServiceAddress: flowServiceAddress, WorkerTarget: worker.WorkerTarget(), Logger: logger,
+	})
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("create Dex Client: %w", err), stopWorker(worker), cache.Close())
+	}
+	runtime := &Runtime{configuration: configuration, logger: logger, worker: worker, client: client, cache: cache}
+	runtime.triggerRunner, err = newSlackRequestTriggerRunner(store, client, newsletter, logger)
+	if err != nil {
+		return nil, errors.Join(err, runtime.Close())
+	}
+	return runtime, nil
+}
+
+// ApplicationName is shown by the application shell.
+func (runtime *Runtime) ApplicationName() string { return runtime.configuration.ApplicationName }
+
+// DexWebURL links the application shell to Dex Web.
+func (runtime *Runtime) DexWebURL() string { return runtime.configuration.DexWebURL }
+
+// Client exposes the Dex Client for integration tests and tools.
+func (runtime *Runtime) Client() *dex.Client { return runtime.client }
+
+// StartWorker starts the Worker and, once Dex answers a health check, the
+// Slack Trigger runner. The channel receives the first fatal error.
+func (runtime *Runtime) StartWorker() <-chan error {
+	result := make(chan error, 2)
+	go func() { result <- runtime.worker.Start() }()
+	if runtime.triggerRunner == nil {
+		return result
+	}
+	triggerContext, cancel := context.WithCancel(context.Background())
+	runtime.stopTriggers = cancel
+	runtime.triggersDone = make(chan struct{})
+	go func() {
+		defer close(runtime.triggersDone)
+		if err := waitForDexServer(triggerContext, runtime.client.HealthCheck, runtime.logger); err != nil {
+			return
+		}
+		if err := runtime.triggerRunner.Run(triggerContext); err != nil && !errors.Is(err, context.Canceled) {
+			result <- fmt.Errorf("run Slack request Trigger: %w", err)
+		}
+	}()
+	return result
+}
+
+// Close stops the Trigger runner, Worker, Client, and cache.
+func (runtime *Runtime) Close() error {
+	var err error
+	runtime.closeOnce.Do(func() {
+		if runtime.stopTriggers != nil {
+			runtime.stopTriggers()
+			<-runtime.triggersDone
+		}
+		err = errors.Join(stopWorker(runtime.worker), runtime.client.Close(), runtime.cache.Close())
+	})
+	return err
+}
+
+// processInputs is everything New loads before it composes the Flows: the
+// process configuration, the optional connector store, and one connection per
+// connector.
+type processInputs struct {
+	configuration config.ProcessConfiguration
+	store         *localconfig.Store
+	connections   processConnections
+}
+
+// loadProcessInputs reads the process configuration and connector store from
+// the environment and builds every connection. It needs no Dex server.
+func loadProcessInputs(logger *slog.Logger) (processInputs, error) {
+	configuration, err := config.Load(os.Getenv(ProcessConfigurationFileEnvironmentVariable))
+	if err != nil {
+		return processInputs{}, err
+	}
+	store, err := loadConnectorStore(logger)
+	if err != nil {
+		return processInputs{}, err
+	}
+	connections, err := newProcessConnections(store, logger)
+	if err != nil {
+		return processInputs{}, err
+	}
+	return processInputs{configuration: configuration, store: store, connections: connections}, nil
+}
+
+type processConnections struct {
+	slack  slack.Connection
+	github github.Connection
+	gemini gemini.Connection
+	sheets spreadsheet.Connection
+	gmail  gmail.Connection
+}
+
+func newProcessConnections(store *localconfig.Store, logger *slog.Logger) (processConnections, error) {
+	var connections processConnections
+	var err error
+	if connections.slack, err = localOrUnconfigured(store, logger, slack.ConnectorID, techblog.SlackConnectionName,
+		slack.NewLocalConnection, newUnconfiguredSlackConnection); err != nil {
+		return processConnections{}, err
+	}
+	if connections.github, err = localOrUnconfigured(store, logger, github.ConnectorID, techblog.GitHubConnectionName,
+		github.NewLocalConnection, newUnconfiguredGitHubConnection); err != nil {
+		return processConnections{}, err
+	}
+	if connections.gemini, err = localOrUnconfigured(store, logger, gemini.ConnectorID, techblog.GeminiConnectionName,
+		gemini.NewLocalConnection, newUnconfiguredGeminiConnection); err != nil {
+		return processConnections{}, err
+	}
+	if connections.sheets, err = localOrUnconfigured(store, logger, spreadsheet.ConnectorID, techblog.GoogleSheetsConnectionName,
+		spreadsheet.NewLocalConnection, newUnconfiguredGoogleSheetsConnection); err != nil {
+		return processConnections{}, err
+	}
+	if connections.gmail, err = localOrUnconfigured(store, logger, gmail.ConnectorID, techblog.GmailConnectionName,
+		gmail.NewLocalConnection, newUnconfiguredGmailConnection); err != nil {
+		return processConnections{}, err
+	}
+	return connections, nil
+}
+
+func newUnconfiguredSlackConnection(credentials sdkgo.CredentialProvider[slack.Credentials]) (slack.Connection, error) {
+	client, err := slack.New(slack.DefaultConfig(), credentials)
+	if err != nil {
+		return slack.Connection{}, err
+	}
+	return slack.NewConnection(client, sdkgo.ConnectionRef{Provider: "slack", Name: techblog.SlackConnectionName})
+}
+
+func newUnconfiguredGitHubConnection(credentials sdkgo.CredentialProvider[github.Credentials]) (github.Connection, error) {
+	client, err := github.New(github.DefaultConfig(), credentials)
+	if err != nil {
+		return github.Connection{}, err
+	}
+	return github.NewConnection(client, sdkgo.ConnectionRef{Provider: "github", Name: techblog.GitHubConnectionName})
+}
+
+func newUnconfiguredGeminiConnection(credentials sdkgo.CredentialProvider[gemini.Credentials]) (gemini.Connection, error) {
+	client, err := gemini.New(gemini.DefaultConfig(), credentials)
+	if err != nil {
+		return gemini.Connection{}, err
+	}
+	return gemini.NewConnection(client, sdkgo.ConnectionRef{Provider: "google", Name: techblog.GeminiConnectionName})
+}
+
+func newUnconfiguredGoogleSheetsConnection(credentials sdkgo.CredentialProvider[spreadsheet.Credentials]) (spreadsheet.Connection, error) {
+	client, err := spreadsheet.New(spreadsheet.DefaultConfig(), credentials)
+	if err != nil {
+		return spreadsheet.Connection{}, err
+	}
+	return spreadsheet.NewConnection(client, sdkgo.ConnectionRef{Provider: "google", Name: techblog.GoogleSheetsConnectionName})
+}
+
+func newUnconfiguredGmailConnection(credentials sdkgo.CredentialProvider[gmail.Credentials]) (gmail.Connection, error) {
+	client, err := gmail.New(gmail.DefaultConfig(), credentials)
+	if err != nil {
+		return gmail.Connection{}, err
+	}
+	return gmail.NewConnection(client, sdkgo.ConnectionRef{Provider: "google", Name: techblog.GmailConnectionName})
+}
+
+// localOrUnconfigured returns the Dex Web connection when it exists, otherwise
+// a connection built on unconfiguredCredentials, whose every credential lookup
+// fails until Dex Web configures the connection and the application restarts.
+func localOrUnconfigured[C any, O any, Credentials any](
+	store *localconfig.Store,
+	logger *slog.Logger,
+	connectorID string,
+	connectionName string,
+	newLocal func(*localconfig.Store, string, ...O) (C, error),
+	newUnconfigured func(sdkgo.CredentialProvider[Credentials]) (C, error),
+) (C, error) {
+	if store != nil {
+		connection, err := newLocal(store, connectionName)
+		if err == nil {
+			return connection, nil
+		}
+		logger.Warn("connector connection is not configured; configure it in Dex Web Connections",
+			"connector", connectorID, "connection", connectionName, "error", err.Error())
+	}
+	connection, err := newUnconfigured(unconfiguredCredentials[Credentials]{connectorID: connectorID, connectionName: connectionName})
+	if err != nil {
+		var zero C
+		return zero, fmt.Errorf("create unconfigured %s connection %s: %w", connectorID, connectionName, err)
+	}
+	return connection, nil
+}
+
+type unconfiguredCredentials[C any] struct {
+	connectorID    string
+	connectionName string
+}
+
+func (credentials unconfiguredCredentials[C]) Resolve(sdkgo.Call) (C, error) {
+	var zero C
+	return zero, fmt.Errorf("connector %q connection %q is not configured; configure it in Dex Web and restart the application",
+		credentials.connectorID, credentials.connectionName)
+}
+
+// loadConnectorStore loads the connection file Dex Web writes. An unset
+// variable, or a path Dex Web has not written yet (a fresh machine, where
+// dexcli creates the directory but not the file), returns a nil store so every
+// connection falls back to an unconfigured one. Any other load failure, such
+// as a malformed file, broad permissions, or a symlink, is fatal.
+func loadConnectorStore(logger *slog.Logger) (*localconfig.Store, error) {
+	path := os.Getenv(localconfig.EnvironmentVariable)
+	if path == "" {
+		logger.Warn("no connector connection file; set it to the path shown by Dex Web Connections",
+			"environment_variable", localconfig.EnvironmentVariable)
+		return nil, nil
+	}
+	store, err := localconfig.LoadFromEnvironment()
+	if errors.Is(err, fs.ErrNotExist) {
+		if absolutePath, absoluteErr := filepath.Abs(path); absoluteErr == nil {
+			path = absolutePath
+		}
+		logger.Warn("connector connection file does not exist yet; configure connections in Dex Web Connections and restart the application",
+			"environment_variable", localconfig.EnvironmentVariable, "path", path)
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load connector connections: %w", err)
+	}
+	return store, nil
+}
+
+func loadSubscriberSheet(store *localconfig.Store, configuration config.ProcessConfiguration, logger *slog.Logger) config.SubscriberSheetConfiguration {
+	if store != nil {
+		loaded, err := localconfig.LoadOperationConfiguration[config.SubscriberSheetConfiguration](store, techblog.SubscriberSheetConfigurationRef())
+		if err == nil {
+			return loaded.Value
+		}
+		logger.Info("subscriber sheet Step is not configured in Dex Web; using the process configuration file", "error", err.Error())
+	}
+	return configuration.Newsletter.SubscriberSheet
+}
+
+func newSlackRequestTriggerRunner(
+	store *localconfig.Store,
+	client *dex.Client,
+	newsletter *techblog.TechBlogNewsletterFlow,
+	logger *slog.Logger,
+) (*slack.MessageTriggerRunner, error) {
+	if store == nil {
+		return nil, nil
+	}
+	triggerName := slack.ChannelThreadCreatedTriggerDefinition.Trigger.TriggerName
+	var binding slack.ChannelThreadCreatedTriggerConfiguration
+	if err := store.DecodeTriggerConfiguration(slack.ConnectorID, techblog.SlackConnectionName, triggerName,
+		techblog.NewsletterRequestTriggerBinding, &binding); err != nil {
+		logger.Warn("Slack request Trigger is not configured; configure the channel in Dex Web Connections", "error", err.Error())
+		return nil, nil
+	}
+	filter, err := techblog.NewsletterRequestTriggerFilter(binding)
+	if err != nil {
+		return nil, fmt.Errorf("Slack request Trigger configuration: %w", err)
+	}
+	bindingLogger := logger.With("connector", slack.ConnectorID, "connection", techblog.SlackConnectionName,
+		"trigger", triggerName, "binding", techblog.NewsletterRequestTriggerBinding)
+	runner, err := slack.NewLocalMessageTriggerRunner(store, techblog.SlackConnectionName, slack.LocalMessageTriggerRunnerConfig{
+		ChannelThreadCreatedRoutes: []slack.LocalChannelThreadCreatedTriggerRoute{{
+			BindingName: techblog.NewsletterRequestTriggerBinding,
+			Target: sdkgo.NewDexFlowTriggerTarget(
+				client, newsletter, filter, techblog.ResolveNewsletterRequestFlowID, techblog.MapSlackMessageToNewsletterRequest,
+				sdkgo.WithTriggerLogger(bindingLogger),
+			),
+		}},
+	}, slack.WithLogger(logger))
+	if err != nil {
+		return nil, fmt.Errorf("create Slack request Trigger runner: %w", err)
+	}
+	return runner, nil
+}
+
+// waitForDexServer returns once Dex answers a health check, backing off from
+// 250 milliseconds to 30 seconds.
+func waitForDexServer(ctx context.Context, healthCheck func(context.Context) (dex.HealthInfo, error), logger *slog.Logger) error {
+	delay := 250 * time.Millisecond
+	for attempt := 1; ; attempt++ {
+		attemptContext, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_, err := healthCheck(attemptContext)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		logger.Warn("Dex server unavailable; retrying", "attempt", attempt, "delay", delay, "error", err.Error())
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		delay = min(2*delay, 30*time.Second)
+	}
+}
+
+func stopWorker(worker *dex.Worker) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return worker.Stop(ctx)
+}
+
+func environment(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
+}
