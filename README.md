@@ -7,6 +7,17 @@ reviewed in Dex Web, and are mailed to the subscribers listed in a Google
 Sheet. This is a Superverse `go-react-v1` application built on the Dex
 basic-process template.
 
+## Not yet built
+
+Subscribers are managed by hand in the Google Sheet. Readers can't join or
+leave the list themselves yet:
+
+- **Subscribe:** no signup path adds a row to the subscriber sheet.
+- **Unsubscribe:** delivery skips rows whose status is `unsubscribed`, but no
+  newsletter carries an unsubscribe link or a `List-Unsubscribe` header yet.
+
+Tracked in [#2](https://github.com/superdurable-apps/dex-newsletter/issues/2).
+
 ## UI mode: No custom UI
 
 Dex Web v2 is the complete process-management surface: Runs, Work Queue,
