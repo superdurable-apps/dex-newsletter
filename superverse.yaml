@@ -1,0 +1,10 @@
+apiVersion: superverse.dev/v1alpha1
+kind: Application
+build:
+  profile: go-react-v1
+  profileVersion: 2
+entrypoints:
+  api: cmd/server
+  web: web
+runtime:
+  port: 8080

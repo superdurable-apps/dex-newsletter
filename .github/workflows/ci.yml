@@ -1,0 +1,73 @@
+name: Template CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Read Dex CLI baseline
+        id: dex-cli
+        shell: bash
+        run: echo "revision=$(cat DEX_CLI_BASELINE)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: superdurable/dex
+          ref: ${{ steps.dex-cli.outputs.revision }}
+          path: upstream-dex
+          fetch-depth: 0
+      - name: Validate released Dex Server baseline
+        shell: bash
+        run: |
+          server_revision="$(git -C upstream-dex rev-parse "$(cat DEX_SERVER_BASELINE)^{commit}")"
+          git -C upstream-dex merge-base --is-ancestor "${server_revision}" HEAD
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: upstream-dex/cli/go.mod
+          cache-dependency-path: |
+            go.sum
+            tools/openapi/go.sum
+            upstream-dex/cli/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.0
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            upstream-dex/web/package-lock.json
+      - name: Install Temporal CLI 1.8.1
+        run: |
+          curl --fail --silent --show-error --location \
+            https://github.com/temporalio/cli/releases/download/v1.8.1/temporal_cli_1.8.1_linux_amd64.tar.gz \
+            --output /tmp/temporal-cli.tar.gz
+          echo "b94417b9a8760b30217f4b881dabce4b16a76a38b5e99e2eca3ce358b8030f06  /tmp/temporal-cli.tar.gz" | sha256sum --check
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf /tmp/temporal-cli.tar.gz -C "$HOME/.local/bin" temporal
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/temporal" --version
+      - name: Build pinned Dex CLI
+        shell: bash
+        run: |
+          npm --prefix upstream-dex/web ci
+          npm --prefix upstream-dex/web run check
+          npm --prefix upstream-dex/web run build
+          mkdir -p "$HOME/.local/bin"
+          cli_version="$(cat DEX_CLI_BASELINE)"
+          cli_version="${cli_version#cli-}"
+          GOWORK=off go build -C upstream-dex/cli -trimpath \
+            -ldflags "-X main.version=${cli_version} -X main.commit=$(git -C upstream-dex rev-parse HEAD)" \
+            -o "$HOME/.local/bin/dexcli" ./cmd/dexcli
+          "$HOME/.local/bin/dexcli" version
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install Playwright Chromium
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+      - name: Check template
+        run: make check

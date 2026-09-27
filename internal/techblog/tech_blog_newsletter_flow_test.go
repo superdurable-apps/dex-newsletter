@@ -1,0 +1,131 @@
+package techblog
+
+import (
+	"testing"
+	"time"
+
+	"github.com/superdurable-apps/dex-newsletter/internal/techblog/config"
+	"github.com/superdurable/dex-connectors-library/connectors/slack"
+	"github.com/superdurable/dex-connectors-library/sdkgo"
+)
+
+func TestNewsletterRequestTriggerFilterAdmitsOnlyTopLevelMessagesInTheChannel(t *testing.T) {
+	filter, err := NewsletterRequestTriggerFilter(slack.ChannelThreadCreatedTriggerConfiguration{
+		ChannelID:            "C1",
+		ThreadTriggerMatcher: slack.MessageMatcher{MessageContains: "blog", PosterUserIDs: []string{"U1"}},
+	})
+	if err != nil {
+		t.Fatalf("filter: %v", err)
+	}
+	base := slack.MessageEvent{TeamID: "T1", ChannelID: "C1", Timestamp: "1.0", ThreadTimestamp: "1.0", UserID: "U1", Text: "Write a Blog post"}
+	cases := []struct {
+		name   string
+		mutate func(*slack.MessageEvent)
+		id     string
+		admit  bool
+	}{
+		{"admits matching root message", func(*slack.MessageEvent) {}, "Ev1", true},
+		{"rejects other channel", func(message *slack.MessageEvent) { message.ChannelID = "C2" }, "Ev1", false},
+		{"rejects thread reply", func(message *slack.MessageEvent) { message.Timestamp = "2.0" }, "Ev1", false},
+		{"rejects other poster", func(message *slack.MessageEvent) { message.UserID = "U2" }, "Ev1", false},
+		{"rejects missing text match", func(message *slack.MessageEvent) { message.Text = "hello" }, "Ev1", false},
+		{"rejects blank text", func(message *slack.MessageEvent) { message.Text = "   " }, "Ev1", false},
+		{"rejects missing event ID", func(*slack.MessageEvent) {}, "", false},
+		{"rejects missing team", func(message *slack.MessageEvent) { message.TeamID = "" }, "Ev1", false},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			message := base
+			testCase.mutate(&message)
+			event := sdkgo.TriggerEvent[slack.MessageEvent]{ID: testCase.id, OccurredAt: time.Unix(1, 0), Payload: message}
+			if got := filter(event); got != testCase.admit {
+				t.Fatalf("filter = %v, want %v", got, testCase.admit)
+			}
+		})
+	}
+}
+
+func TestResolveNewsletterRequestFlowIDIsStablePerMessage(t *testing.T) {
+	event := sdkgo.TriggerEvent[slack.MessageEvent]{ID: "Ev1", Payload: slack.MessageEvent{TeamID: "T1", ChannelID: "C1", Timestamp: "1700000000.000100"}}
+	redelivered := event
+	redelivered.ID = "Ev1-retry"
+	if ResolveNewsletterRequestFlowID(event) != ResolveNewsletterRequestFlowID(redelivered) {
+		t.Fatal("redelivery must resolve to the same Flow ID")
+	}
+	if got, want := ResolveNewsletterRequestFlowID(event), "tech-blog-newsletter-T1-C1-1700000000.000100"; got != want {
+		t.Fatalf("Flow ID = %q, want %q", got, want)
+	}
+	request := MapSlackMessageToNewsletterRequest(sdkgo.TriggerEvent[slack.MessageEvent]{ID: "Ev2", Payload: slack.MessageEvent{
+		TeamID: "T1", ChannelID: "C1", Timestamp: "5.0", UserID: "U1", Text: "blog",
+	}})
+	if request.ThreadTimestamp != "5.0" || request.SlackEventID != "Ev2" || request.RequestText != "blog" {
+		t.Fatalf("mapped request = %+v", request)
+	}
+}
+
+func TestSubscriberSheetA1Range(t *testing.T) {
+	cases := []struct {
+		sheet config.SubscriberSheetConfiguration
+		want  string
+	}{
+		{config.SubscriberSheetConfiguration{Range: "A:B"}, "A:B"},
+		{config.SubscriberSheetConfiguration{Tab: "Subscribers", Range: "A:B"}, "'Subscribers'!A:B"},
+		{config.SubscriberSheetConfiguration{Tab: "Subscribers", Range: "Other!A:B"}, "Other!A:B"},
+		{config.SubscriberSheetConfiguration{Tab: " My List ", Range: " A1:C "}, "'My List'!A1:C"},
+	}
+	for _, testCase := range cases {
+		if got := subscriberSheetA1Range(testCase.sheet); got != testCase.want {
+			t.Errorf("range(%+v) = %q, want %q", testCase.sheet, got, testCase.want)
+		}
+	}
+}
+
+func TestSanitizeSubjectRemovesHeaderInjectionAndBoundsLength(t *testing.T) {
+	if got := sanitizeSubject("Weekly\r\nBcc: attacker@example.com"); got != "Weekly Bcc: attacker@example.com" {
+		t.Fatalf("sanitized subject = %q", got)
+	}
+	long := ""
+	for len(long) < 400 {
+		long += "subject "
+	}
+	if got := []rune(sanitizeSubject(long)); len(got) > maximumSubjectRunes {
+		t.Fatalf("subject length = %d, want <= %d", len(got), maximumSubjectRunes)
+	}
+	if sanitizeSubject(" \t ") != "" {
+		t.Fatal("blank subject must sanitize to empty so the drafted subject is kept")
+	}
+}
+
+func TestValidateOpenGateRejectsStaleOrClosedGates(t *testing.T) {
+	if err := validateOpenGate(StatusAwaitingEditorReview, StatusAwaitingEditorReview, "review-1", "review-1"); err != nil {
+		t.Fatalf("open gate rejected: %v", err)
+	}
+	if err := validateOpenGate(StatusAwaitingEditorReview, StatusAwaitingEditorReview, "review-1", "review-0"); err == nil {
+		t.Fatal("stale gate accepted")
+	}
+	if err := validateOpenGate(StatusDeliveryApproved, StatusAwaitingEditorReview, "review-1", "review-1"); err == nil {
+		t.Fatal("closed gate accepted")
+	}
+}
+
+func TestDirectoryBlogArtifactStoreWritesIdempotentlyInsideItsRoot(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewDirectoryBlogArtifactStore(root)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	first, err := store.WriteBlogArtifact("flow/../../escape", "../post.html", "<!doctype html>one")
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	second, err := store.WriteBlogArtifact("flow/../../escape", "../post.html", "<!doctype html>two")
+	if err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	if first != second {
+		t.Fatalf("rewrite changed the path: %q vs %q", first, second)
+	}
+	if len(first) <= len(root) || first[:len(root)] != root {
+		t.Fatalf("artifact %q escaped root %q", first, root)
+	}
+}

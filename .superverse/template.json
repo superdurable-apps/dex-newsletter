@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "buildProfile": "go-react-v1",
+  "templateVersion": "1.4.1",
+  "minimumSandboxImageContractRevision": 2,
+  "openapiSpec": "openapi/openapi.yaml",
+  "agentInstructions": "AGENTS.md",
+  "dexSkill": ".agents/skills/dex-app-builder/SKILL.md",
+  "commands": {
+    "bootstrap": "make bootstrap",
+    "generate": "make generate",
+    "checkGenerated": "make check-generated",
+    "checkFdgV2": "make check-fdg-v2",
+    "testUnit": "make test-unit",
+    "testIntegration": "make test-integration",
+    "testE2E": "make test-e2e",
+    "build": "make build",
+    "dev": "make dev",
+    "check": "make check"
+  }
+}

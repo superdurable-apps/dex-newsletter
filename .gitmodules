@@ -1,0 +1,3 @@
+[submodule ".agents/skills/dex-app-builder/upstream"]
+	path = .agents/skills/dex-app-builder/upstream
+	url = https://github.com/superdurable/dex-skills.git

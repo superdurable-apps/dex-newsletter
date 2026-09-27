@@ -1,0 +1,17 @@
+/bin/
+/tmp/
+/.local/
+/web/dist/
+/web/node_modules/
+/web/playwright-report/
+/web/test-results/
+*.log
+__pycache__/
+
+# Local connector development overrides (never commit)
+go.work
+go.work.sum
+
+# Local Dex development state (make dev / dev-dex / dev-app)
+/.dex-dev/
+/artifacts/

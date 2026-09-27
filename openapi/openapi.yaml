@@ -1,0 +1,26 @@
+openapi: 3.0.3
+info:
+  title: Dex Tech Blog API
+  version: 1.0.0
+paths:
+  /api/application-info:
+    get:
+      operationId: getApplicationInfo
+      responses:
+        '200':
+          description: Non-business application identity for the Hello World page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationInfo'
+components:
+  schemas:
+    ApplicationInfo:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+        dexWebUrl:
+          type: string
