@@ -2,9 +2,11 @@ package techblog
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/superdurable-apps/dex-newsletter/internal/techblog/unsubscribe"
 	"github.com/superdurable/dex-connectors-library/connectors/slack"
 	"github.com/superdurable/dex-connectors-library/sdkgo"
 )
@@ -104,6 +106,37 @@ func TestSubscriberListStartsWithAConstantRequestID(t *testing.T) {
 	}
 	if first.AlreadyStarted == nil || !first.AlreadyStarted.IgnoreError || first.Timeout != nil {
 		t.Fatalf("start options = %+v; want AlreadyStarted.IgnoreError and no timeout", first)
+	}
+}
+
+func TestRemoveSubscriberRemovesOnlyTheAddressATokenNames(t *testing.T) {
+	key, err := unsubscribe.NewKey([]byte(strings.Repeat("k", 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := []string{"a@example.com", "b@example.com", "c@example.com"}
+	updated, result := removeSubscriber(current, key.Token("b@example.com"), key)
+	if result.Outcome != UnsubscriptionRemoved || !reflect.DeepEqual(updated, []string{"a@example.com", "c@example.com"}) {
+		t.Fatalf("remove b = %q, %+v", updated, result)
+	}
+	if !reflect.DeepEqual(current, []string{"a@example.com", "b@example.com", "c@example.com"}) {
+		t.Fatalf("removeSubscriber modified its input: %q", current)
+	}
+	again, result := removeSubscriber(updated, key.Token("b@example.com"), key)
+	if result.Outcome != UnsubscriptionNotSubscribed || !reflect.DeepEqual(again, updated) {
+		t.Fatalf("second remove of b = %q, %+v, want not-subscribed", again, result)
+	}
+	otherKey, _ := unsubscribe.NewKey([]byte(strings.Repeat("o", 32)))
+	if _, result := removeSubscriber(current, otherKey.Token("b@example.com"), key); result.Outcome != UnsubscriptionNotSubscribed {
+		t.Fatalf("a token from another key = %+v, want not-subscribed", result)
+	}
+	for _, token := range []string{"", "short", strings.Repeat("a", 21) + "="} {
+		if _, result := removeSubscriber(current, token, key); result.Outcome != UnsubscriptionInvalidToken {
+			t.Errorf("token %q = %+v, want invalid-token", token, result)
+		}
+	}
+	if emptied, result := removeSubscriber([]string{"a@example.com"}, key.Token("a@example.com"), key); result.Outcome != UnsubscriptionRemoved || len(emptied) != 0 {
+		t.Fatalf("removing the last subscriber = %q, %+v", emptied, result)
 	}
 }
 

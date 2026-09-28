@@ -2,7 +2,9 @@ package render
 
 import (
 	"fmt"
+	"html"
 	"html/template"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -124,6 +126,26 @@ type newsletterHighlightView struct {
 	Text []inlineSegment
 }
 
+// UnsubscribeURLPlaceholder stands in for each recipient's unsubscribe link
+// in a rendered newsletter. The .invalid domain never resolves, so a copy
+// that escapes personalization links nowhere.
+const UnsubscribeURLPlaceholder = "https://unsubscribe.invalid/newsletter"
+
+// PersonalizeNewsletter returns newsletter with every unsubscribe placeholder
+// replaced by unsubscribeURL, HTML-escaped in HTMLBody. unsubscribeURL must be
+// an absolute http(s) URL, or the placeholder is left in place and an error
+// returned.
+func PersonalizeNewsletter(newsletter model.RenderedNewsletter, unsubscribeURL string) (model.RenderedNewsletter, error) {
+	parsed, err := url.Parse(unsubscribeURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return newsletter, fmt.Errorf("unsubscribe URL must be an absolute http(s) URL")
+	}
+	personalized := newsletter
+	personalized.HTMLBody = strings.ReplaceAll(newsletter.HTMLBody, UnsubscribeURLPlaceholder, html.EscapeString(unsubscribeURL))
+	personalized.TextBody = strings.ReplaceAll(newsletter.TextBody, UnsubscribeURLPlaceholder, unsubscribeURL)
+	return personalized, nil
+}
+
 // newsletterView is the data of the newsletter email template.
 type newsletterView struct {
 	Subject    string
@@ -136,6 +158,9 @@ type newsletterView struct {
 	Post       blogPostView
 	Closing    [][]inlineSegment
 	Footer     [][]inlineSegment
+	// UnsubscribeURL is always UnsubscribeURLPlaceholder; PersonalizeNewsletter
+	// replaces it for each recipient.
+	UnsubscribeURL string
 	// OutlookContainerStart and OutlookContainerEnd are always
 	// outlookContainerStart and outlookContainerEnd.
 	OutlookContainerStart template.HTML
@@ -153,7 +178,9 @@ type newsletterView struct {
 // conditional table, with no style element, script, or external asset. It
 // holds a hidden preheader, the intro, the highlights, a "Read on the web"
 // button when PublishedBlogURL is non-empty, the full blog post, the closing,
-// and footer. TextBody is the plain-text alternative with the same content,
+// footer, and an Unsubscribe link to UnsubscribeURLPlaceholder that
+// PersonalizeNewsletter replaces for each recipient. TextBody is the
+// plain-text alternative with the same content,
 // links written as "label (url)" and lines separated by LF. Intro, highlight
 // text, closing, and footer support the same inline markup as blog text.
 //
@@ -184,6 +211,7 @@ func RenderNewsletter(draft model.NewsletterDraft, post model.BlogPost, presenta
 		Closing:   parseProseParagraphs(normalizedDraft.Closing),
 		Footer:    parseProseParagraphs(footerText),
 
+		UnsubscribeURL:        UnsubscribeURLPlaceholder,
 		OutlookContainerStart: outlookContainerStart,
 		OutlookContainerEnd:   outlookContainerEnd,
 	}
@@ -305,13 +333,14 @@ var newsletterTemplateText = strings.NewReplacer(
 {{template "paragraphs" .Closing}}</td>
 </tr>
 {{end}}</table>
-{{if .Footer}}<table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;">
 <tr>
 <td style="padding:16px 32px 0 32px;font-family:SANS_FONTS;font-size:12px;line-height:18px;color:#6b7280;">
-{{template "paragraphs" .Footer}}</td>
+{{if .Footer}}{{template "paragraphs" .Footer}}{{end}}<p style="margin:0 0 12px 0;"><a href="{{.UnsubscribeURL}}" rel="noopener" style="color:#6b7280;text-decoration:underline;">Unsubscribe</a> from these emails.</p>
+</td>
 </tr>
 </table>
-{{end}}{{.OutlookContainerEnd}}
+{{.OutlookContainerEnd}}
 </td>
 </tr>
 </table>
@@ -386,13 +415,12 @@ func renderNewsletterText(view newsletterView) string {
 			add(plainInlineText(paragraph))
 		}
 	}
-	if len(view.Footer) > 0 {
-		footerParagraphs := make([]string, 0, len(view.Footer))
-		for _, paragraph := range view.Footer {
-			footerParagraphs = append(footerParagraphs, plainInlineText(paragraph))
-		}
-		add("-- \n" + strings.Join(footerParagraphs, "\n\n"))
+	footerParagraphs := make([]string, 0, len(view.Footer)+1)
+	for _, paragraph := range view.Footer {
+		footerParagraphs = append(footerParagraphs, plainInlineText(paragraph))
 	}
+	footerParagraphs = append(footerParagraphs, "Unsubscribe: "+view.UnsubscribeURL)
+	add("-- \n" + strings.Join(footerParagraphs, "\n\n"))
 	return strings.Join(chunks, "\n\n") + "\n"
 }
 

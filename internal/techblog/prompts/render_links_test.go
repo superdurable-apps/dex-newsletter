@@ -144,7 +144,9 @@ func TestParsedOutputRendersOnlyCitableLinks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderNewsletter: %v", err)
 	}
-	assertOnlyAllowedLinks(t, "newsletter HTML", rendered.HTMLBody, allowed)
+	// The newsletter also links to the application's own unsubscribe
+	// placeholder, which no model output can supply.
+	assertOnlyAllowedLinks(t, "newsletter HTML", rendered.HTMLBody, append(slices.Clone(allowed), render.UnsubscribeURLPlaceholder))
 	if draft.Intro == "" || len(draft.Highlights) != 3 {
 		t.Errorf("newsletter copy lost content: intro %q, %d highlights", draft.Intro, len(draft.Highlights))
 	}
@@ -241,7 +243,7 @@ func TestRandomMarkupRendersOnlyCitableLinks(t *testing.T) {
 		if err != nil {
 			t.Fatalf("round %d: RenderNewsletter: %v", round, err)
 		}
-		assertOnlyAllowedLinks(t, "newsletter HTML", codeElementPattern.ReplaceAllString(rendered.HTMLBody, ""), allowed)
+		assertOnlyAllowedLinks(t, "newsletter HTML", codeElementPattern.ReplaceAllString(rendered.HTMLBody, ""), append(slices.Clone(allowed), render.UnsubscribeURLPlaceholder))
 		if t.Failed() {
 			t.Fatalf("round %d newsletter: %+v", round, draft)
 		}

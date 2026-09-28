@@ -13,16 +13,19 @@ release; external developers install the released Dex plugin in their coding
 agent. Never assume a fixed skill path. This repository must not vendor, clone,
 or initialize a project-local copy.
 
-## UI mode: Custom UI (subscription form only)
+## UI mode: Custom UI (the newsletter page only)
 
 The confirmed UI mode is **Custom UI**. Its recorded Dex Web v2 capability gap
 is a participant portal: newsletter readers are not Dex Web operators, so they
 need their own page. It is limited to one reader-facing control:
 the home page shows the application name, a link to Dex Web, and a newsletter
-subscription form with exactly one Email input and one Subscribe button. The
-user confirmed that page, field, and action; keep it intentionally minimal (no
-other fields, preferences, or subscription management) unless the user asks
-for more and confirms a new static wireframe first. Dex Web v2 remains the only
+subscription form with exactly one Email input and one Subscribe button. Opened
+from an email's unsubscribe link (`?unsubscribe=<token>`), the same page
+unsubscribes immediately (the user chose immediate over a confirm button) and
+keeps the form. The user confirmed that page, field, and those actions; keep it
+intentionally minimal (no other fields, preferences, or subscription
+management) unless the user asks for more and confirms a new static wireframe
+first. Dex Web v2 remains the only
 process-management surface: Runs, Work Queue, search, details, edits, and
 Actions all happen there.
 
@@ -34,16 +37,18 @@ an application HTTP webhook. The page reuses the template's `.panel`, `label`,
 
 ## HTTP contract
 
-`openapi/openapi.yaml` is the only HTTP contract source and defines exactly two
-operations: `getApplicationInfo` (`GET /api/application-info`) and
-`subscribeToNewsletter` (`POST /api/newsletter/subscriptions`). Never edit
+`openapi/openapi.yaml` is the only HTTP contract source and defines exactly three
+operations: `getApplicationInfo` (`GET /api/application-info`),
+`subscribeToNewsletter` (`POST /api/newsletter/subscriptions`), and
+`unsubscribeFromNewsletter` (`POST /api/newsletter/unsubscriptions`). Never edit
 files below `internal/api/generated` or `web/src/api/generated` by hand.
 Change the spec, run `make generate`, and update server, UI, and
 E2E coverage in the same change. `internal/api` implements those operations
 plus JSON 404/405 responses; the browser calls only the generated client and
 never Dex. `subscribeToNewsletter` answers the same 200 for a new and an
 existing address, and 409 for every valid address once the list is full, so
-no response reveals list membership.
+no response reveals list membership; `unsubscribeFromNewsletter` answers the
+same 200 whether or not a token named a subscriber.
 
 ## Dex Flows
 
@@ -77,6 +82,7 @@ commit a `go.work`, local `replace`, branch, or pseudo-version. The isolated
 | --- | --- |
 | `DEXCLI` | Dex CLI binary used by `make check-fdg-v2`, `make test-integration`, `make test-e2e`, `make dev`, and `make dev-dex`. Defaults to `dexcli` on `PATH`. The scripts fail fast unless `$DEXCLI version` reports the release pinned in `DEX_CLI_BASELINE`. A project-local copy may live at `$HOME/.local/dexcli/v0.14.0/dexcli`. |
 | `DEX_CONNECTOR_CONFIG_FILE` | Absolute path of the local connector connection store shown by Dex Web (default `~/.dex/connectors/connections.json`). It holds plaintext development credentials: never commit, log, or copy it into Flow state. |
+| `TECH_BLOG_UNSUBSCRIBE_KEY_FILE` | Required secret: the base64 key (at least 32 bytes) that signs unsubscribe links. `scripts/dev.sh` creates `.dex-dev/unsubscribe.key` when unset and `scripts/run-e2e.sh` a throwaway one; never commit a key, and never copy it into Flow state. |
 | `TECH_BLOG_CONFIG_FILE` | Path of the non-secret process configuration JSON (application name, Dex Web URL, model, research, blog, newsletter, and review settings). `make dev` and `make dev-dex` run Dex Web on dexcli's default port `8802` to match the default `dexWebUrl`; keep them in sync if you override `DEX_DEV_WEB_PORT`. |
 
 ## Commands and verification

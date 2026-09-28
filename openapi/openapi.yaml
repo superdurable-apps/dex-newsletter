@@ -52,8 +52,56 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /api/newsletter/unsubscriptions:
+    post:
+      operationId: unsubscribeFromNewsletter
+      description: >-
+        Removes the subscriber named by the token of a newsletter unsubscribe
+        link. A token that names no current subscriber gets the same response,
+        so the response never reveals list membership.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewsletterUnsubscriptionRequest'
+      responses:
+        '200':
+          description: The subscriber named by the token, if any, is no longer on the list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NewsletterUnsubscription'
+        '400':
+          description: The token is not an unsubscribe token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: The subscriber list is temporarily unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 components:
   schemas:
+    NewsletterUnsubscriptionRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{22}$'
+    NewsletterUnsubscription:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [unsubscribed]
     NewsletterSubscriptionRequest:
       type: object
       additionalProperties: false

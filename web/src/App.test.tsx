@@ -5,6 +5,7 @@ import { App } from './App';
 const api = vi.hoisted(() => ({
   getApplicationInfo: vi.fn(),
   subscribeToNewsletter: vi.fn(),
+  unsubscribeFromNewsletter: vi.fn(),
 }));
 
 vi.mock('./api/generated/sdk.gen', () => api);
@@ -25,6 +26,7 @@ function submitEmail(email: string) {
 describe('App', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.history.replaceState(null, '', '/');
   });
 
   afterEach(cleanup);
@@ -162,5 +164,76 @@ describe('App', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('Subscribed as reader@example.com.');
     expect(screen.getByRole('button', { name: 'Subscribe' })).toHaveAttribute('aria-disabled', 'false');
     expect(screen.getByRole('form', { name: 'Newsletter subscription' })).toHaveAttribute('aria-busy', 'false');
+  });
+
+  describe('opened from an unsubscribe link', () => {
+    const token = 'Ab0-_Ab0-_Ab0-_Ab0-_Ab';
+
+    it('unsubscribes immediately, once, and removes the token from the address bar', async () => {
+      api.unsubscribeFromNewsletter.mockResolvedValue({ data: { status: 'unsubscribed' } });
+      window.history.replaceState(null, '', `/?ref=mail&unsubscribe=${token}`);
+      await renderReady();
+      expect(await screen.findByText("You're unsubscribed. You won't receive future issues.")).toBeInTheDocument();
+      expect(api.unsubscribeFromNewsletter).toHaveBeenCalledTimes(1);
+      expect(api.unsubscribeFromNewsletter).toHaveBeenCalledWith({ body: { token } });
+      expect(window.location.search).toBe('?ref=mail');
+      // The page keeps its one form, so an accidental unsubscribe can be undone.
+      expect(screen.getAllByRole('textbox')).toHaveLength(1);
+      expect(screen.getAllByRole('button')).toHaveLength(1);
+      expect(api.subscribeToNewsletter).not.toHaveBeenCalled();
+    });
+
+    it('shows progress until the list answers', async () => {
+      api.unsubscribeFromNewsletter.mockReturnValue(new Promise(() => {}));
+      window.history.replaceState(null, '', `/?unsubscribe=${token}`);
+      await renderReady();
+      expect(screen.getByRole('status')).toHaveTextContent('Unsubscribing…');
+    });
+
+    it('rejects a mangled link without calling the API', async () => {
+      window.history.replaceState(null, '', '/?unsubscribe=not-a-token');
+      await renderReady();
+      expect(await screen.findByRole('alert')).toHaveTextContent("This unsubscribe link isn't valid.");
+      expect(api.unsubscribeFromNewsletter).not.toHaveBeenCalled();
+      expect(window.location.search).toBe('');
+    });
+
+    it('explains a link the server rejects', async () => {
+      api.unsubscribeFromNewsletter.mockResolvedValue({
+        error: { error: 'invalid_request', message: 'request does not match the OpenAPI contract' },
+        response: { status: 400 },
+      });
+      window.history.replaceState(null, '', `/?unsubscribe=${token}`);
+      await renderReady();
+      expect(await screen.findByRole('alert')).toHaveTextContent("This unsubscribe link isn't valid.");
+    });
+
+    it('shows the server message when the list is unavailable', async () => {
+      api.unsubscribeFromNewsletter.mockResolvedValue({
+        error: { error: 'unavailable', message: "We couldn't unsubscribe you right now. Open the link again in a minute." },
+        response: { status: 503 },
+      });
+      window.history.replaceState(null, '', `/?unsubscribe=${token}`);
+      await renderReady();
+      expect(await screen.findByRole('alert')).toHaveTextContent("We couldn't unsubscribe you right now.");
+      expect(screen.getByRole('status')).toBeEmptyDOMElement();
+    });
+
+    it('shows the generic message when the request never reaches the server', async () => {
+      api.unsubscribeFromNewsletter.mockRejectedValue(new TypeError('Failed to fetch'));
+      window.history.replaceState(null, '', `/?unsubscribe=${token}`);
+      await renderReady();
+      expect(await screen.findByRole('alert')).toHaveTextContent("We couldn't unsubscribe you right now.");
+    });
+
+    it('lets the reader subscribe again after unsubscribing', async () => {
+      api.unsubscribeFromNewsletter.mockResolvedValue({ data: { status: 'unsubscribed' } });
+      api.subscribeToNewsletter.mockResolvedValue({ data: { email: 'reader@example.com' } });
+      window.history.replaceState(null, '', `/?unsubscribe=${token}`);
+      await renderReady();
+      await screen.findByText("You're unsubscribed. You won't receive future issues.");
+      submitEmail('reader@example.com');
+      expect(await screen.findByRole('status')).toHaveTextContent('Subscribed as reader@example.com.');
+    });
   });
 });

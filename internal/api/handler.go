@@ -1,9 +1,9 @@
 // Package api implements the application's OpenAPI contract.
 //
 // Dex Web v2 remains the only process-management surface. The API exposes the
-// application identity for the home page and one reader-facing operation that
-// adds an address to the newsletter subscriber list. Do not add
-// process-management routes here.
+// application identity for the home page and the two reader-facing operations
+// of the newsletter page: subscribe, and unsubscribe through an email link.
+// Do not add process-management routes here.
 package api
 
 import (
@@ -25,13 +25,17 @@ var (
 	ErrSubscriberListFull = errors.New("newsletter subscriber list is full")
 )
 
-// NewsletterSubscriptions adds addresses to the newsletter subscriber list.
+// NewsletterSubscriptions adds and removes newsletter subscribers.
 type NewsletterSubscriptions interface {
 	// Subscribe adds the address and returns its canonical form. Adding an
 	// address that is already subscribed succeeds. It returns
 	// ErrInvalidEmailAddress or ErrSubscriberListFull for a rejected address
 	// and any other error when the list cannot be reached.
 	Subscribe(ctx context.Context, email string) (string, error)
+	// Unsubscribe removes the subscriber an unsubscribe token names. A token
+	// that names no current subscriber succeeds too. It returns an error only
+	// when the list cannot be reached.
+	Unsubscribe(ctx context.Context, token string) error
 }
 
 // ApplicationInfo is the non-business identity returned by GetApplicationInfo.
@@ -90,6 +94,15 @@ func (handler *Handler) SubscribeToNewsletter(ctx context.Context, request *gene
 		slog.WarnContext(ctx, "newsletter subscription failed", "error", err)
 		return &generated.SubscribeToNewsletterServiceUnavailable{Error: "unavailable", Message: "Subscriptions are unavailable right now. Try again in a minute."}, nil
 	}
+}
+
+// UnsubscribeFromNewsletter removes the subscriber a link token names.
+func (handler *Handler) UnsubscribeFromNewsletter(ctx context.Context, request *generated.NewsletterUnsubscriptionRequest) (generated.UnsubscribeFromNewsletterRes, error) {
+	if err := handler.subscriptions.Unsubscribe(ctx, request.Token); err != nil {
+		slog.WarnContext(ctx, "newsletter unsubscription failed", "error", err)
+		return &generated.UnsubscribeFromNewsletterServiceUnavailable{Error: "unavailable", Message: "We couldn't unsubscribe you right now. Open the link again in a minute."}, nil
+	}
+	return &generated.NewsletterUnsubscription{Status: generated.NewsletterUnsubscriptionStatusUnsubscribed}, nil
 }
 
 func writeGeneratedError(_ context.Context, w http.ResponseWriter, _ *http.Request, err error) {

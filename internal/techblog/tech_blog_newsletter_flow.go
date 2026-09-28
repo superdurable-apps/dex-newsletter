@@ -278,13 +278,23 @@ type SubscriberListReader interface {
 	ListNewsletterSubscribers(ctx context.Context) ([]string, error)
 }
 
+// UnsubscribeLinks builds the unsubscribe link each newsletter email carries.
+type UnsubscribeLinks interface {
+	// URL returns the unsubscribe link for one canonical address.
+	URL(canonicalAddress string) string
+	// ExampleURL returns a link of the real shape that unsubscribes nobody,
+	// for the previews editors review.
+	ExampleURL() string
+}
+
 // TechBlogNewsletterFlowDependencies are the constructor-injected
 // collaborators of TechBlogNewsletterFlow.
 type TechBlogNewsletterFlowDependencies struct {
-	Configuration   config.ProcessConfiguration
-	SlackConnection slack.Connection
-	GmailConnection gmail.Connection
-	SubscriberList  SubscriberListReader
+	Configuration    config.ProcessConfiguration
+	SlackConnection  slack.Connection
+	GmailConnection  gmail.Connection
+	SubscriberList   SubscriberListReader
+	UnsubscribeLinks UnsubscribeLinks
 	// SubscriberListReadRetry overrides how long a failed subscriber list read
 	// is retried before the request holds for attention; nil retries for
 	// about ten minutes.
@@ -305,12 +315,12 @@ type TechBlogNewsletterFlow struct {
 // NewTechBlogNewsletterFlow validates and wires the Flow.
 func NewTechBlogNewsletterFlow(dependencies TechBlogNewsletterFlowDependencies) *TechBlogNewsletterFlow {
 	if dependencies.BlogArtifactStore == nil || dependencies.LanguageModelGeneration == nil || dependencies.RepositoryResearch == nil ||
-		dependencies.SubscriberList == nil {
-		panic("tech blog newsletter Flow requires an artifact store, a subscriber list reader, and both child Flows")
+		dependencies.SubscriberList == nil || dependencies.UnsubscribeLinks == nil {
+		panic("tech blog newsletter Flow requires an artifact store, a subscriber list reader, unsubscribe links, and both child Flows")
 	}
 	return &TechBlogNewsletterFlow{
 		dependencies: dependencies,
-		stages:       &newsletterStages{configuration: dependencies.Configuration},
+		stages:       &newsletterStages{configuration: dependencies.Configuration, unsubscribeLinks: dependencies.UnsubscribeLinks},
 	}
 }
 
@@ -1183,9 +1193,12 @@ func (step DraftNewsletter) Execute(ctx dex.Context, _ model.GenerationRequest) 
 		}
 		return dex.GoTo(sdkgo.StepRef[SlackThreadReply](postAttentionNoticeStepType), reply), nil
 	}
+	// Editors review the newsletter with an example unsubscribe link; each
+	// recipient's own link is filled in at send time.
+	preview, err := render.PersonalizeNewsletter(newsletter, step.stages.unsubscribeLinks.ExampleURL())
 	newsletterPath := ""
 	if err == nil {
-		newsletterPath, err = step.artifactStore.WriteBlogArtifact(ctx.FlowID(), newsletterArtifactFileName(post), newsletter.HTMLBody)
+		newsletterPath, err = step.artifactStore.WriteBlogArtifact(ctx.FlowID(), newsletterArtifactFileName(post), preview.HTMLBody)
 	}
 	if err != nil {
 		reply, recordErr := step.stages.recordAttention(ctx, StageDraftNewsletter, err.Error())
@@ -1194,8 +1207,8 @@ func (step DraftNewsletter) Execute(ctx dex.Context, _ model.GenerationRequest) 
 		}
 		return dex.GoTo(sdkgo.StepRef[SlackThreadReply](postAttentionNoticeStepType), reply), nil
 	}
-	preview, _ := truncateRunes(newsletter.TextBody, maximumPreviewRunes)
-	if err := newsletterTextPreview.Set(ctx, preview); err != nil {
+	previewText, _ := truncateRunes(preview.TextBody, maximumPreviewRunes)
+	if err := newsletterTextPreview.Set(ctx, previewText); err != nil {
 		return nil, err
 	}
 	if err := newsletterArtifactPath.Set(ctx, newsletterPath); err != nil {
@@ -1441,7 +1454,11 @@ func (step LoadNewsletterSubscribers) Execute(ctx dex.Context, _ StageEntry) (*d
 	if err := requestStatus.Set(ctx, StatusSendingNewsletter); err != nil {
 		return nil, err
 	}
-	return dex.GoTo(sdkgo.StepRef[NewsletterDelivery](sendNewsletterToSubscriberStepType), deliveryFor(newsletter, list, 0)), nil
+	delivery, err := step.stages.deliveryFor(newsletter, list, 0)
+	if err != nil {
+		return nil, err
+	}
+	return dex.GoTo(sdkgo.StepRef[NewsletterDelivery](sendNewsletterToSubscriberStepType), delivery), nil
 }
 
 // dex:group group-id:delivery group-label:"Delivery"
@@ -1519,7 +1536,11 @@ func (step RecordNewsletterDelivery) Execute(ctx dex.Context, result gmail.SendM
 		if err != nil {
 			return nil, err
 		}
-		return dex.GoTo(sdkgo.StepRef[NewsletterDelivery](sendNewsletterToSubscriberStepType), deliveryFor(newsletter, list, int(next))), nil
+		delivery, err := step.stages.deliveryFor(newsletter, list, int(next))
+		if err != nil {
+			return nil, err
+		}
+		return dex.GoTo(sdkgo.StepRef[NewsletterDelivery](sendNewsletterToSubscriberStepType), delivery), nil
 	}
 	post, err := blogPost.Get(ctx)
 	if err != nil {
@@ -1781,7 +1802,8 @@ func (CompleteNewsletterRequest) Execute(ctx dex.Context, _ slack.PostThreadRepl
 // closing state. It never returns Dex decisions: every transition stays in a
 // Step's Execute so the Flow Definition Graph shows it.
 type newsletterStages struct {
-	configuration config.ProcessConfiguration
+	configuration    config.ProcessConfiguration
+	unsubscribeLinks UnsubscribeLinks
 }
 
 func (stages *newsletterStages) prepareRequestInterpretation(ctx dex.Context) (model.GenerationRequest, error) {
@@ -2024,7 +2046,7 @@ func (stages *newsletterStages) prepareDeliveryResumption(ctx dex.Context) (News
 	if err := requestStatus.Set(ctx, StatusSendingNewsletter); err != nil {
 		return NewsletterDelivery{}, err
 	}
-	return deliveryFor(newsletter, list, int(cursor)), nil
+	return stages.deliveryFor(newsletter, list, int(cursor))
 }
 
 // isConnectionLevelDeliveryFailure reports a failure of the sending account
@@ -2146,11 +2168,18 @@ func threadOf(request model.NewsletterRequest) model.SlackThreadReference {
 	return model.SlackThreadReference{ChannelID: request.ChannelID, ThreadTimestamp: request.ThreadTimestamp}
 }
 
-func deliveryFor(newsletter model.RenderedNewsletter, list model.SubscriberList, index int) NewsletterDelivery {
-	return NewsletterDelivery{
-		RecipientIndex: index, Recipient: list.Recipients[index], Subject: newsletter.Subject,
-		HTMLBody: newsletter.HTMLBody, TextBody: newsletter.TextBody,
+// deliveryFor builds the send for one recipient, with that recipient's own
+// unsubscribe link in both bodies.
+func (stages *newsletterStages) deliveryFor(newsletter model.RenderedNewsletter, list model.SubscriberList, index int) (NewsletterDelivery, error) {
+	recipient := list.Recipients[index]
+	personalized, err := render.PersonalizeNewsletter(newsletter, stages.unsubscribeLinks.URL(recipient))
+	if err != nil {
+		return NewsletterDelivery{}, err
 	}
+	return NewsletterDelivery{
+		RecipientIndex: index, Recipient: recipient, Subject: personalized.Subject,
+		HTMLBody: personalized.HTMLBody, TextBody: personalized.TextBody,
+	}, nil
 }
 
 func sanitizeSubject(subject string) string {

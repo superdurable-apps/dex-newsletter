@@ -17,6 +17,7 @@ import (
 	"github.com/superdurable-apps/dex-newsletter/internal/api"
 	"github.com/superdurable-apps/dex-newsletter/internal/techblog"
 	"github.com/superdurable-apps/dex-newsletter/internal/techblog/config"
+	"github.com/superdurable-apps/dex-newsletter/internal/techblog/unsubscribe"
 	github "github.com/superdurable/dex-connectors-library/connectors/github"
 	"github.com/superdurable/dex-connectors-library/connectors/google/gemini"
 	"github.com/superdurable/dex-connectors-library/connectors/google/gmail"
@@ -30,6 +31,11 @@ import (
 // ProcessConfigurationFileEnvironmentVariable names the optional process
 // configuration file. Without it the built-in defaults are used.
 const ProcessConfigurationFileEnvironmentVariable = "TECH_BLOG_CONFIG_FILE"
+
+// UnsubscribeKeyFileEnvironmentVariable names the required file holding the
+// base64 key that signs unsubscribe links, such as the output of
+// `openssl rand -base64 32`. Changing the key invalidates every link sent.
+const UnsubscribeKeyFileEnvironmentVariable = "TECH_BLOG_UNSUBSCRIBE_KEY_FILE"
 
 // subscriptionTimeout bounds one subscription request's call into Dex.
 const subscriptionTimeout = 10 * time.Second
@@ -62,9 +68,13 @@ func New(logger *slog.Logger) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	unsubscribeLinks, err := unsubscribe.NewLinks(inputs.unsubscribeKey, configuration.Newsletter.SubscriptionPageURL)
+	if err != nil {
+		return nil, err
+	}
 	languageModel := techblog.NewLanguageModelGenerationFlow(connections.gemini)
 	research := techblog.NewRepositoryChangeResearchFlow(configuration, connections.github, languageModel)
-	subscriberListFlow := techblog.NewNewsletterSubscriberListFlow(configuration)
+	subscriberListFlow := techblog.NewNewsletterSubscriberListFlow(configuration, inputs.unsubscribeKey)
 	// The Dex Client needs the registry, and the registry needs the Flows, so
 	// the subscriber list client resolves the Client when it is first called.
 	var dexClient *dex.Client
@@ -75,6 +85,7 @@ func New(logger *slog.Logger) (*Runtime, error) {
 		SlackConnection:         connections.slack,
 		GmailConnection:         connections.gmail,
 		SubscriberList:          subscriberList,
+		UnsubscribeLinks:        unsubscribeLinks,
 		BlogArtifactStore:       artifactStore,
 		LanguageModelGeneration: languageModel,
 		RepositoryResearch:      research,
@@ -176,15 +187,20 @@ func (runtime *Runtime) Close() error {
 // process configuration, the optional connector store, and one connection per
 // connector.
 type processInputs struct {
-	configuration config.ProcessConfiguration
-	store         *localconfig.Store
-	connections   processConnections
+	configuration  config.ProcessConfiguration
+	unsubscribeKey unsubscribe.Key
+	store          *localconfig.Store
+	connections    processConnections
 }
 
 // loadProcessInputs reads the process configuration and connector store from
 // the environment and builds every connection. It needs no Dex server.
 func loadProcessInputs(logger *slog.Logger) (processInputs, error) {
 	configuration, err := config.Load(os.Getenv(ProcessConfigurationFileEnvironmentVariable))
+	if err != nil {
+		return processInputs{}, err
+	}
+	unsubscribeKey, err := loadUnsubscribeKey()
 	if err != nil {
 		return processInputs{}, err
 	}
@@ -196,7 +212,22 @@ func loadProcessInputs(logger *slog.Logger) (processInputs, error) {
 	if err != nil {
 		return processInputs{}, err
 	}
-	return processInputs{configuration: configuration, store: store, connections: connections}, nil
+	return processInputs{configuration: configuration, unsubscribeKey: unsubscribeKey, store: store, connections: connections}, nil
+}
+
+// loadUnsubscribeKey reads the key named by TECH_BLOG_UNSUBSCRIBE_KEY_FILE. The
+// key is required: every newsletter carries an unsubscribe link.
+func loadUnsubscribeKey() (unsubscribe.Key, error) {
+	path := os.Getenv(UnsubscribeKeyFileEnvironmentVariable)
+	if path == "" {
+		return unsubscribe.Key{}, fmt.Errorf("%s is not set; point it at a file holding a base64 key of at least 32 bytes, for example the output of `openssl rand -base64 32` (make dev creates .dex-dev/unsubscribe.key)",
+			UnsubscribeKeyFileEnvironmentVariable)
+	}
+	key, err := unsubscribe.LoadKey(path)
+	if err != nil {
+		return unsubscribe.Key{}, fmt.Errorf("%s: %w", UnsubscribeKeyFileEnvironmentVariable, err)
+	}
+	return key, nil
 }
 
 type processConnections struct {
@@ -362,9 +393,11 @@ func newSlackRequestTriggerRunner(
 	return runner, nil
 }
 
-// subscriberAdder adds one address to the newsletter subscriber list Flow.
+// subscriberAdder adds and removes addresses in the newsletter subscriber
+// list Flow.
 type subscriberAdder interface {
 	AddNewsletterSubscriber(ctx context.Context, email string) (techblog.AddNewsletterSubscriberResult, error)
+	RemoveNewsletterSubscriber(ctx context.Context, token string) (techblog.RemoveNewsletterSubscriberResult, error)
 }
 
 // newsletterSubscriptions adapts the subscriber list Flow to the HTTP API.
@@ -390,6 +423,24 @@ func (subscriptions newsletterSubscriptions) Subscribe(ctx context.Context, emai
 		return "", api.ErrSubscriberListFull
 	default:
 		return "", fmt.Errorf("unknown subscription outcome %q", result.Outcome)
+	}
+}
+
+// Unsubscribe removes the subscriber a link token names. Removed,
+// not-subscribed, and invalid tokens all succeed, so the answer never reveals
+// who is on the list. Errors never include the token.
+func (subscriptions newsletterSubscriptions) Unsubscribe(ctx context.Context, token string) error {
+	ctx, cancel := context.WithTimeout(ctx, subscriptionTimeout)
+	defer cancel()
+	result, err := subscriptions.list.RemoveNewsletterSubscriber(ctx, token)
+	if err != nil {
+		return fmt.Errorf("remove a newsletter subscriber: %w", err)
+	}
+	switch result.Outcome {
+	case techblog.UnsubscriptionRemoved, techblog.UnsubscriptionNotSubscribed, techblog.UnsubscriptionInvalidToken:
+		return nil
+	default:
+		return fmt.Errorf("unknown unsubscription outcome %q", result.Outcome)
 	}
 }
 

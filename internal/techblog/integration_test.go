@@ -22,6 +22,8 @@ import (
 
 	"github.com/superdurable-apps/dex-newsletter/internal/techblog"
 	"github.com/superdurable-apps/dex-newsletter/internal/techblog/config"
+	"github.com/superdurable-apps/dex-newsletter/internal/techblog/render"
+	"github.com/superdurable-apps/dex-newsletter/internal/techblog/unsubscribe"
 	github "github.com/superdurable/dex-connectors-library/connectors/github"
 	"github.com/superdurable/dex-connectors-library/connectors/google/gemini"
 	"github.com/superdurable/dex-connectors-library/connectors/google/gmail"
@@ -119,6 +121,18 @@ func TestHappyPathWithRevisionStaleGateAndWorkerReplacement(t *testing.T) {
 	}
 	if got := harness.providers.gmail.totalSends(); got != 4 {
 		t.Errorf("Gmail sends = %d, want 4: one per unique subscriber", got)
+	}
+	for _, recipient := range []string{"alice@example.com", "bob@example.com", "dana@example.org"} {
+		body := harness.providers.gmail.bodyTo(recipient)
+		if !strings.Contains(body, "https://news.example.com/newsletter?unsubscribe="+harness.unsubscribeKey.Token(recipient)) {
+			t.Errorf("the newsletter to %s does not carry its own unsubscribe link", recipient)
+		}
+		if strings.Contains(body, render.UnsubscribeURLPlaceholder) {
+			t.Errorf("the newsletter to %s still carries the unsubscribe placeholder", recipient)
+		}
+	}
+	if strings.Contains(harness.providers.gmail.bodyTo("alice@example.com"), harness.unsubscribeKey.Token("bob@example.com")) {
+		t.Error("alice's newsletter carries bob's unsubscribe link")
 	}
 	final, err := harness.display(ctx, flowID)
 	if err != nil {
@@ -468,6 +482,43 @@ func TestSubscriberListRestartKeepsTheListAndShowsItInDexWeb(t *testing.T) {
 	}
 }
 
+// TestUnsubscribeLinkRemovesTheReaderFromLaterIssues unsubscribes one reader
+// with the token from their link, then delivers an issue.
+func TestUnsubscribeLinkRemovesTheReaderFromLaterIssues(t *testing.T) {
+	ctx := integrationContext(t, 2*time.Minute)
+	harness := newProcessHarness(t, fakeGeminiBehavior{understood: true, hasNotableChanges: true})
+	token := harness.unsubscribeKey.Token("bob@example.com")
+	removed, err := harness.subscriberList.RemoveNewsletterSubscriber(ctx, token)
+	if err != nil || removed.Outcome != techblog.UnsubscriptionRemoved {
+		t.Fatalf("unsubscribe bob = %+v, %v", removed, err)
+	}
+	again, err := harness.subscriberList.RemoveNewsletterSubscriber(ctx, token)
+	if err != nil || again.Outcome != techblog.UnsubscriptionNotSubscribed {
+		t.Fatalf("opening the link again = %+v, %v; want not-subscribed", again, err)
+	}
+	unknown, err := harness.subscriberList.RemoveNewsletterSubscriber(ctx, harness.unsubscribeKey.Token("stranger@example.com"))
+	if err != nil || unknown.Outcome != techblog.UnsubscriptionNotSubscribed {
+		t.Fatalf("a stranger's token = %+v, %v; want not-subscribed", unknown, err)
+	}
+	addresses, err := harness.subscriberList.ListNewsletterSubscribers(ctx)
+	if err != nil || len(addresses) != defaultTestAudience-1 {
+		t.Fatalf("subscribers after unsubscribing bob = %q, %v", addresses, err)
+	}
+	flowID := harness.deliverSlackRequest(ctx, "Blog about connectors", 1)
+	harness.approveCurrentDraft(ctx, flowID)
+	result := harness.waitForResult(ctx, flowID)
+	if result.Status != techblog.StatusDelivered || result.Delivery.Recipients != defaultTestAudience-1 {
+		t.Fatalf("result = %+v, want delivery to the %d remaining subscribers", result, defaultTestAudience-1)
+	}
+	if got := harness.providers.gmail.sendCount("bob@example.com"); got != 0 {
+		t.Fatalf("sends to the unsubscribed reader = %d, want 0", got)
+	}
+	resubscribed, err := harness.subscriberList.AddNewsletterSubscriber(ctx, "bob@example.com")
+	if err != nil || resubscribed.Outcome != techblog.SubscriptionAdded {
+		t.Fatalf("resubscribing bob = %+v, %v", resubscribed, err)
+	}
+}
+
 // TestEmptySubscriberListClosesWithoutSending approves an issue while nobody
 // has subscribed yet, the list's initial state.
 func TestEmptySubscriberListClosesWithoutSending(t *testing.T) {
@@ -614,6 +665,7 @@ type processHarness struct {
 	subscriberFlow    *techblog.NewsletterSubscriberListFlow
 	subscriberFlowID  string
 	subscriberReader  *failableSubscriberReader
+	unsubscribeKey    unsubscribe.Key
 	teamID            string
 	messageSequence   int
 }
@@ -646,6 +698,12 @@ func newProcessHarnessWithSubscribers(t *testing.T, behavior fakeGeminiBehavior,
 	harness.configuration.Blog.PublicBaseURL = "https://blog.example.com/posts"
 	harness.configuration.Review.ReminderInterval = config.Duration(time.Hour)
 	harness.configuration.Review.MaxReminders = 1
+	harness.configuration.Newsletter.SubscriptionPageURL = "https://news.example.com/newsletter"
+	key, err := unsubscribe.NewKey([]byte("integration-unsubscribe-key-0123456789"))
+	if err != nil {
+		t.Fatalf("unsubscribe key: %v", err)
+	}
+	harness.unsubscribeKey = key
 	if err := harness.configuration.Validate(); err != nil {
 		t.Fatalf("test configuration: %v", err)
 	}
@@ -703,7 +761,11 @@ func (harness *processHarness) newRegistry() *dex.Registry {
 	research := techblog.NewRepositoryChangeResearchFlow(harness.configuration, connections.github, languageModel)
 	// Each harness owns its subscriber list, so tests sharing one Dex server
 	// never see each other's subscribers.
-	subscriberListFlow := techblog.NewNewsletterSubscriberListFlow(harness.configuration)
+	subscriberListFlow := techblog.NewNewsletterSubscriberListFlow(harness.configuration, harness.unsubscribeKey)
+	unsubscribeLinks, err := unsubscribe.NewLinks(harness.unsubscribeKey, harness.configuration.Newsletter.SubscriptionPageURL)
+	if err != nil {
+		harness.t.Fatalf("unsubscribe links: %v", err)
+	}
 	harness.subscriberFlow = subscriberListFlow
 	harness.subscriberFlowID = "newsletter-subscriber-list-" + harness.teamID
 	harness.subscriberList = techblog.NewNewsletterSubscriberListClient(subscriberListFlow,
@@ -715,6 +777,7 @@ func (harness *processHarness) newRegistry() *dex.Registry {
 	harness.newsletter = techblog.NewTechBlogNewsletterFlow(techblog.TechBlogNewsletterFlowDependencies{
 		Configuration: harness.configuration, SlackConnection: connections.slack, GmailConnection: connections.gmail,
 		SubscriberList:          harness.subscriberReader,
+		UnsubscribeLinks:        unsubscribeLinks,
 		SubscriberListReadRetry: &dex.RetryPolicy{InitialInterval: 100 * time.Millisecond, BackoffCoefficient: 1, MaximumAttempts: 3},
 		BlogArtifactStore:       artifactStore, LanguageModelGeneration: languageModel, RepositoryResearch: research,
 	})
@@ -1349,6 +1412,7 @@ type fakeGmail struct {
 	sends                 map[string]int
 	accepted              map[string]int
 	lastBody              string
+	bodies                map[string]string
 	next                  int
 	authenticationFailure bool
 	// failAfterAccepted, when positive, fails authentication once that many
@@ -1400,7 +1464,7 @@ func (provider *fakeGmail) totalAccepted() int {
 }
 
 func newFakeGmail(t *testing.T) *fakeGmail {
-	provider := &fakeGmail{sends: map[string]int{}, accepted: map[string]int{}, unavailableRecipients: map[string]bool{}, sendDelays: map[string]time.Duration{}}
+	provider := &fakeGmail{sends: map[string]int{}, accepted: map[string]int{}, unavailableRecipients: map[string]bool{}, sendDelays: map[string]time.Duration{}, bodies: map[string]string{}}
 	provider.Server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/users/me/messages/send" {
 			http.NotFound(writer, request)
@@ -1441,6 +1505,7 @@ func newFakeGmail(t *testing.T) *fakeGmail {
 		if !authenticationFailure && !unavailable && !strings.HasPrefix(recipient, "reject@") {
 			provider.accepted[recipient]++
 			provider.lastBody = string(raw)
+			provider.bodies[recipient] = string(raw) + decodeMIMEBodies(string(raw))
 		}
 		delay := provider.sendDelays[recipient]
 		provider.mutex.Unlock()
@@ -1467,6 +1532,13 @@ func newFakeGmail(t *testing.T) *fakeGmail {
 	}))
 	t.Cleanup(provider.Close)
 	return provider
+}
+
+// bodyTo returns the decoded message last accepted for recipient.
+func (provider *fakeGmail) bodyTo(recipient string) string {
+	provider.mutex.Lock()
+	defer provider.mutex.Unlock()
+	return provider.bodies[strings.ToLower(recipient)]
 }
 
 func (provider *fakeGmail) sendCount(recipient string) int {
