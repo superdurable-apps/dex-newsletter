@@ -31,6 +31,10 @@ import (
 	"github.com/superdurable/dex-connectors-library/sdkgo"
 	"github.com/superdurable/dex/blob-cache-go/blobcache"
 	"github.com/superdurable/dex/sdk-go/dex"
+	"github.com/superdurable/dex/sdk-go/gen/dexpb"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 const (
@@ -540,6 +544,50 @@ func TestUnsubscribeLinkRemovesTheReaderFromLaterIssues(t *testing.T) {
 
 // TestEmptySubscriberListClosesWithoutSending approves an issue while nobody
 // has subscribed yet, the list's initial state.
+// TestDexWebShowsTheFirstDeliveryExceptions delivers to more rejected
+// subscribers than the display shows: Dex Web lists the first ones in
+// delivery order, and the AttributeMap still records every exception.
+func TestDexWebShowsTheFirstDeliveryExceptions(t *testing.T) {
+	ctx := integrationContext(t, 3*time.Minute)
+	const rejected = 22
+	subscribers := make([]string, 0, rejected+1)
+	for index := range rejected {
+		subscribers = append(subscribers, fmt.Sprintf("reject@r%02d.example.com", index))
+	}
+	subscribers = append(subscribers, "alice@example.com")
+	harness := newProcessHarnessWithSubscribers(t, fakeGeminiBehavior{understood: true, hasNotableChanges: true}, subscribers)
+	flowID := harness.deliverSlackRequest(ctx, "Blog about connectors", 1)
+	harness.approveCurrentDraft(ctx, flowID)
+	result := harness.waitForResult(ctx, flowID)
+	if result.Status != techblog.StatusDelivered || result.Delivery.Rejected != rejected || result.Delivery.Sent != 1 {
+		t.Fatalf("result = %+v, want %d rejected and 1 sent", result, rejected)
+	}
+	display, err := harness.display(ctx, flowID)
+	if err != nil {
+		t.Fatalf("display after delivery: %v", err)
+	}
+	shown := deliveryExceptionsOf(t, display)
+	if len(shown) != 20 {
+		t.Fatalf("Dex Web shows %d delivery exceptions, want the first 20", len(shown))
+	}
+	for index, exception := range shown {
+		if exception.Recipient != subscribers[index] || exception.Status != "rejected" {
+			t.Fatalf("shown exception %d = %+v, want %s rejected", index, exception, subscribers[index])
+		}
+	}
+	keys := make([]string, 0, rejected+1)
+	for position := range rejected + 1 {
+		keys = append(keys, fmt.Sprintf("delivery-exceptions/recipient-%05d", position))
+	}
+	attributes, err := harness.flowService.GetAttributes(ctx, &dexpb.GetAttributesRequest{FlowId: flowID, Keys: keys})
+	if err != nil {
+		t.Fatalf("read the delivery-exceptions AttributeMap: %v", err)
+	}
+	if got := len(attributes.GetAttributes()); got != rejected {
+		t.Fatalf("delivery-exceptions holds %d instances, want one per rejected subscriber (%d)", got, rejected)
+	}
+}
+
 func TestEmptySubscriberListClosesWithoutSending(t *testing.T) {
 	ctx := integrationContext(t, 2*time.Minute)
 	harness := newProcessHarnessWithSubscribers(t, fakeGeminiBehavior{understood: true, hasNotableChanges: true}, nil)
@@ -678,6 +726,7 @@ type processHarness struct {
 	artifactDirectory string
 	cache             *blobcache.Cache
 	client            *dex.Client
+	flowService       dexpb.FlowServiceClient
 	worker            *dex.Worker
 	newsletter        *techblog.TechBlogNewsletterFlow
 	subscriberList    techblog.NewsletterSubscriberListClient
@@ -687,6 +736,9 @@ type processHarness struct {
 	unsubscribeKey    unsubscribe.Key
 	teamID            string
 	messageSequence   int
+	// lastWaitError is the latest error a waitFor condition saw, reported
+	// if the wait times out.
+	lastWaitError error
 }
 
 // defaultTestSubscribers seed each harness's subscriber list. Bob repeats in
@@ -739,9 +791,15 @@ func newProcessHarnessWithSubscribers(t *testing.T, behavior fakeGeminiBehavior,
 	if err != nil {
 		t.Fatalf("create Dex client: %v", err)
 	}
+	connection, err := grpc.NewClient(os.Getenv("DEX_FLOW_SERVICE_ADDRESS"), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("connect to the Dex FlowService: %v", err)
+	}
+	harness.flowService = dexpb.NewFlowServiceClient(connection)
 	harness.startWorker(registry)
 	t.Cleanup(func() {
 		harness.stopWorker()
+		_ = connection.Close()
 		_ = harness.client.Close()
 		_ = harness.cache.Close()
 	})
@@ -887,10 +945,36 @@ func (harness *processHarness) deliverSlackRequest(ctx context.Context, text str
 	return techblog.ResolveNewsletterRequestFlowID(event)
 }
 
+// display returns the run's Display. It first invokes the Summary and Display
+// RPCs the way Dex Web does, so every state a test reaches proves Dex Web can
+// render the run (and therefore its Actions).
 func (harness *processHarness) display(ctx context.Context, flowID string) (map[string]any, error) {
+	for _, rpcName := range []string{"GetDexSummary", "GetDexDisplay"} {
+		if err := harness.invokeAsDexWeb(ctx, flowID, rpcName); err != nil {
+			harness.lastWaitError = fmt.Errorf("%s as Dex Web invokes it: %w", rpcName, err)
+			return nil, harness.lastWaitError
+		}
+	}
 	var output map[string]any
 	err := harness.client.InvokeRPC(ctx, flowID, harness.newsletter.GetDexDisplay, nil, &output)
+	if err != nil {
+		harness.lastWaitError = err
+	}
 	return output, err
+}
+
+// invokeAsDexWeb invokes a view RPC as Dex Web v0.14.0 does (web/api/v2.go
+// invokeView): by name, with a null input and no AttributeMap or Channel
+// loads. The typed Client adds an RPC's registered loads itself, so only this
+// call catches a Summary or Display RPC that Dex Web cannot render.
+func (harness *processHarness) invokeAsDexWeb(ctx context.Context, flowID string, rpcName string) error {
+	harness.messageSequence++
+	_, err := harness.flowService.InvokeRPC(ctx, &dexpb.InvokeRPCRequest{
+		FlowId: flowID, RpcName: rpcName,
+		Input:          &dexpb.Value{Kind: &dexpb.Value_NullValue{NullValue: structpb.NullValue_NULL_VALUE}},
+		TimeoutSeconds: 30, RequestId: fmt.Sprintf("%s-dex-web-%s-%d", harness.teamID, rpcName, harness.messageSequence),
+	})
+	return err
 }
 
 func (harness *processHarness) waitForStatus(ctx context.Context, flowID string, status string) map[string]any {
@@ -972,7 +1056,7 @@ func (harness *processHarness) waitFor(ctx context.Context, description string, 
 		}
 		select {
 		case <-ctx.Done():
-			harness.t.Fatalf("timed out waiting for %s", description)
+			harness.t.Fatalf("timed out waiting for %s (last error: %v)", description, harness.lastWaitError)
 		case <-ticker.C:
 		}
 	}
@@ -1044,7 +1128,7 @@ func (reader *failableSubscriberReader) ListNewsletterSubscribers(ctx context.Co
 // deliveryExceptionsOf decodes the Dex Web display of delivery exceptions.
 func deliveryExceptionsOf(t *testing.T, display map[string]any) []struct{ Recipient, Status string } {
 	t.Helper()
-	encoded, err := json.Marshal(display["delivery-exceptions"])
+	encoded, err := json.Marshal(display["delivery-exceptions-shown"])
 	if err != nil {
 		t.Fatalf("encode delivery exceptions: %v", err)
 	}
