@@ -45,9 +45,18 @@ RPC's registered `RPCOptions` loads, locks, or transactionality (the Go Client
 adds those itself). A Summary or Display RPC that reads an AttributeMap or
 Channel therefore fails in Dex Web and hides the run's Actions; give Dex Web a
 bounded Attribute instead (as `delivery-exceptions-shown` does). Integration
-tests call both RPCs that way on every display poll. Action RPCs rely on the
-review and attention gates' Channels, not on their locks, for at most one
-decision per gate.
+tests call both RPCs that way on every display poll, and check each output
+against the view's `dex:field` directives as Dex Web does.
+
+Actions from Dex Web therefore run without their `LockAttributes`
+(superdurable/dex#562). The review and attention gates still consume at most
+one decision each (`ForOne` on the gate's Channel instance), so no issue is
+sent twice. What the missing locks allow: two Actions clicked within a few
+milliseconds both report success and only the first takes effect, and an
+Action that lands while the final expiry Execute of `WaitForEditorialDecision`
+or `WaitForOperatorRecovery` runs reports success and is then dropped as the
+request expires (the Slack expiry notice is what the editor sees). Go Client
+callers still get the locks.
 
 ## Naming
 

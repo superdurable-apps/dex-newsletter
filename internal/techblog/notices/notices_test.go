@@ -51,6 +51,9 @@ var (
 )
 
 // assertSlackSafe checks the invariants every notice must satisfy.
+// testFlowType is the Flow type every linked test run reference names.
+const testFlowType = "TechBlogNewsletterFlow"
+
 func assertSlackSafe(t *testing.T, name string, message string) {
 	t.Helper()
 	if !utf8.ValidString(message) {
@@ -168,12 +171,12 @@ func TestNoticesAreSlackSafeForAdversarialInput(t *testing.T) {
 		runReference RunReference
 		urlText      string
 	}{
-		{name: "adversarial text, adversarial run reference", text: adversarialText, runReference: RunReference{FlowID: adversarialText, DexWebURL: adversarialText}, urlText: adversarialText},
-		{name: "adversarial text, valid Dex Web URL", text: adversarialText, runReference: RunReference{FlowID: "<!channel>|x>@here&y", DexWebURL: "https://dex.example.com/"}, urlText: "https://blog.example.com/posts/a?x=1&y=2"},
+		{name: "adversarial text, adversarial run reference", text: adversarialText, runReference: RunReference{FlowType: testFlowType, FlowID: adversarialText, DexWebURL: adversarialText}, urlText: adversarialText},
+		{name: "adversarial text, valid Dex Web URL", text: adversarialText, runReference: RunReference{FlowType: testFlowType, FlowID: "<!channel>|x>@here&y", DexWebURL: "https://dex.example.com/"}, urlText: "https://blog.example.com/posts/a?x=1&y=2"},
 		{name: "mentions only", text: "<!channel> <@U123ABC> @here", runReference: RunReference{FlowID: "<@U123ABC>"}, urlText: "javascript:alert(1)"},
-		{name: "entities already escaped", text: "&lt;!channel&gt; &amp;lt;@U123ABC&amp;gt;", runReference: RunReference{FlowID: "&lt;!here&gt;", DexWebURL: "https://dex.example.com"}, urlText: "https://blog.example.com/a|b"},
+		{name: "entities already escaped", text: "&lt;!channel&gt; &amp;lt;@U123ABC&amp;gt;", runReference: RunReference{FlowType: testFlowType, FlowID: "&lt;!here&gt;", DexWebURL: "https://dex.example.com"}, urlText: "https://blog.example.com/a|b"},
 		{name: "fake quoted lines", text: "fine\n> *Sent:* 999\n>>> <!channel>", runReference: RunReference{FlowID: "f\n> x"}, urlText: "https://blog.example.com/\n<!channel>"},
-		{name: "email and secrets only", text: "victim@example.com key=AIzaSyA1234567890123456789012345678901", runReference: RunReference{FlowID: "victim@example.com", DexWebURL: "https://dex.example.com"}, urlText: "https://blog.example.com/?token=hunter2"},
+		{name: "email and secrets only", text: "victim@example.com key=AIzaSyA1234567890123456789012345678901", runReference: RunReference{FlowType: testFlowType, FlowID: "victim@example.com", DexWebURL: "https://dex.example.com"}, urlText: "https://blog.example.com/?token=hunter2"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -191,7 +194,8 @@ func TestNoticesStayWithinMessageLimitForMaximumInput(t *testing.T) {
 	// Every character of expanding text escapes to several runes.
 	expandingText := strings.Repeat("&@ ", 20000)
 	manyLines := strings.Repeat("&&&&&&&&&&&&&&&&&&&&\n", 2000)
-	longDexWebURL := "https://dex.example.com/" + strings.Repeat("d", 560)
+	// Sized so the run link, "/v2/run/TechBlogNewsletterFlow/flow" included, just fits maximumLinkTargetRunes.
+	longDexWebURL := "https://dex.example.com/" + strings.Repeat("d", 538)
 	longArtifactURL := "https://artifacts.example.com/" + strings.Repeat("a", 560)
 	tests := []struct {
 		name         string
@@ -199,10 +203,10 @@ func TestNoticesStayWithinMessageLimitForMaximumInput(t *testing.T) {
 		runReference RunReference
 		urlText      string
 	}{
-		{name: "expanding single-line text with longest links", text: expandingText, runReference: RunReference{FlowID: "flow", DexWebURL: longDexWebURL}, urlText: longArtifactURL},
-		{name: "many lines with longest links", text: manyLines, runReference: RunReference{FlowID: "flow", DexWebURL: longDexWebURL}, urlText: longArtifactURL},
+		{name: "expanding single-line text with longest links", text: expandingText, runReference: RunReference{FlowType: testFlowType, FlowID: "flow", DexWebURL: longDexWebURL}, urlText: longArtifactURL},
+		{name: "many lines with longest links", text: manyLines, runReference: RunReference{FlowType: testFlowType, FlowID: "flow", DexWebURL: longDexWebURL}, urlText: longArtifactURL},
 		{name: "expanding text with Flow ID fallback", text: expandingText, runReference: RunReference{FlowID: expandingText}, urlText: expandingText},
-		{name: "input beyond the input cap", text: strings.Repeat("x ", 100000), runReference: RunReference{FlowID: strings.Repeat("x", 200000), DexWebURL: longDexWebURL}, urlText: strings.Repeat("y", 200000)},
+		{name: "input beyond the input cap", text: strings.Repeat("x ", 100000), runReference: RunReference{FlowType: testFlowType, FlowID: strings.Repeat("x", 200000), DexWebURL: longDexWebURL}, urlText: strings.Repeat("y", 200000)},
 	}
 	summary := model.DeliverySummary{Recipients: math.MaxInt, Sent: math.MaxInt - 1, Rejected: math.MaxInt, Uncertain: math.MaxInt, Defect: math.MaxInt,
 		SkippedOverLimit: math.MaxInt, InvalidAddresses: math.MaxInt}
@@ -218,8 +222,8 @@ func TestNoticesStayWithinMessageLimitForMaximumInput(t *testing.T) {
 			}
 		})
 	}
-	longestLinkMessage := DraftReadyForReview(adversarialPost(expandingText, 50), RunReference{FlowID: "flow", DexWebURL: longDexWebURL}, longArtifactURL, math.MaxInt)
-	if !strings.Contains(longestLinkMessage, "<"+longDexWebURL+"/v2/runs/flow|") || !strings.Contains(longestLinkMessage, "<"+longArtifactURL+"|") {
+	longestLinkMessage := DraftReadyForReview(adversarialPost(expandingText, 50), RunReference{FlowType: testFlowType, FlowID: "flow", DexWebURL: longDexWebURL}, longArtifactURL, math.MaxInt)
+	if !strings.Contains(longestLinkMessage, "<"+longDexWebURL+"/v2/run/TechBlogNewsletterFlow/flow|") || !strings.Contains(longestLinkMessage, "<"+longArtifactURL+"|") {
 		t.Errorf("maximum-size case did not exercise both links: %q", longestLinkMessage)
 	}
 }
@@ -227,7 +231,7 @@ func TestNoticesStayWithinMessageLimitForMaximumInput(t *testing.T) {
 func TestNoticesAreDeterministic(t *testing.T) {
 	post := adversarialPost(adversarialText, 8)
 	repositories := adversarialRepositories(adversarialText, 12)
-	runReference := RunReference{FlowID: "flow-1", DexWebURL: "https://dex.example.com"}
+	runReference := RunReference{FlowType: testFlowType, FlowID: "flow-1", DexWebURL: "https://dex.example.com"}
 	summary := model.DeliverySummary{Recipients: 5, Sent: 4, Defect: 1}
 	first := allNoticesFor(adversarialText, post, runReference, repositories, summary, "https://blog.example.com/p", 3)
 	second := allNoticesFor(adversarialText, post, runReference, repositories, summary, "https://blog.example.com/p", 3)
@@ -249,7 +253,7 @@ func TestNoticeText(t *testing.T) {
 			{Heading: "How it works"},
 		},
 	}
-	linkedRun := RunReference{FlowID: "techblog/Ev01", DexWebURL: "https://dex.example.com/"}
+	linkedRun := RunReference{FlowType: testFlowType, FlowID: "techblog/Ev01", DexWebURL: "https://dex.example.com/"}
 	repositories := []model.RepositoryReference{
 		{Owner: "superdurable", Name: "dex"},
 		{Owner: " ", Name: " "},
@@ -324,7 +328,7 @@ func TestNoticeText(t *testing.T) {
 		{
 			name: "DraftReadyForReview first draft",
 			got:  DraftReadyForReview(post, linkedRun, "artifacts/connector-triggers.html", 0),
-			want: ":memo: *Draft ready for review*\n*Title:* Connector triggers land in Dex\n*Summary:* Slack and Gmail connectors can now start Flows.\n*Sections:* What changed · How it works\n*Tags:* connectors, triggers\n*Preview:* `artifacts/connector-triggers.html`\n*Review:* <https://dex.example.com/v2/runs/techblog%2FEv01|Open the review in Dex Web> to approve it, request changes, or discard it.",
+			want: ":memo: *Draft ready for review*\n*Title:* Connector triggers land in Dex\n*Summary:* Slack and Gmail connectors can now start Flows.\n*Sections:* What changed · How it works\n*Tags:* connectors, triggers\n*Preview:* `artifacts/connector-triggers.html`\n*Review:* <https://dex.example.com/v2/run/TechBlogNewsletterFlow/techblog%2FEv01|Open the review in Dex Web> to approve it, request changes, or discard it.",
 		},
 		{
 			name: "DraftReadyForReview revision with linked preview and Flow ID fallback",
@@ -344,7 +348,7 @@ func TestNoticeText(t *testing.T) {
 		{
 			name: "ReviewReminder numbered",
 			got:  ReviewReminder(post, linkedRun, 2),
-			want: ":bell: Reminder 2: this draft is still waiting for editor review.\n*Title:* Connector triggers land in Dex\n*Review:* <https://dex.example.com/v2/runs/techblog%2FEv01|Open the review in Dex Web> to approve it, request changes, or discard it.",
+			want: ":bell: Reminder 2: this draft is still waiting for editor review.\n*Title:* Connector triggers land in Dex\n*Review:* <https://dex.example.com/v2/run/TechBlogNewsletterFlow/techblog%2FEv01|Open the review in Dex Web> to approve it, request changes, or discard it.",
 		},
 		{
 			name: "ReviewReminder unnumbered",
@@ -379,11 +383,11 @@ func TestNoticeText(t *testing.T) {
 		{
 			name: "NeedsAttention",
 			got:  NeedsAttention("draft blog post", "Gemini returned status 503.", linkedRun),
-			want: ":warning: *This request needs attention.*\n*Stage:* draft blog post\n*Details:*\n> Gemini returned status 503.\n*Run:* <https://dex.example.com/v2/runs/techblog%2FEv01|Open the run in Dex Web>",
+			want: ":warning: *This request needs attention.*\n*Stage:* draft blog post\n*Details:*\n> Gemini returned status 503.\n*Run:* <https://dex.example.com/v2/run/TechBlogNewsletterFlow/techblog%2FEv01|Open the run in Dex Web>",
 		},
 		{
 			name: "NeedsAttention empty",
-			got:  NeedsAttention("", "", RunReference{DexWebURL: "https://dex.example.com"}),
+			got:  NeedsAttention("", "", RunReference{FlowType: testFlowType, DexWebURL: "https://dex.example.com"}),
 			want: ":warning: *This request needs attention.*",
 		},
 		{
@@ -579,7 +583,7 @@ func TestDeliveryStopped(t *testing.T) {
 
 func TestDeliveryHeldForAttention(t *testing.T) {
 	post := model.BlogPost{Title: "Connector triggers | <v2>"}
-	linkedRun := RunReference{FlowID: "techblog/Ev01", DexWebURL: "https://dex.example.com/"}
+	linkedRun := RunReference{FlowType: testFlowType, FlowID: "techblog/Ev01", DexWebURL: "https://dex.example.com/"}
 	nextStep := "*Next step:* Fix the cause in the details, then retry the run in Dex Web. Sending resumes with the first subscriber not yet attempted."
 	reason := "Gmail could not send with the newsletter-sender connection (authentication)."
 	tests := []struct {
@@ -596,7 +600,7 @@ func TestDeliveryHeldForAttention(t *testing.T) {
 			runReference: linkedRun,
 			want: ":warning: *Newsletter sending paused* after sending to 120 of 500 subscribers.\n" +
 				"*Title:* Connector triggers | &lt;v2&gt;\n*Details:*\n> " + reason + "\n*Not delivered so far:* 380 not yet attempted\n" +
-				nextStep + "\n*Run:* <https://dex.example.com/v2/runs/techblog%2FEv01|Open the run in Dex Web>",
+				nextStep + "\n*Run:* <https://dex.example.com/v2/run/TechBlogNewsletterFlow/techblog%2FEv01|Open the run in Dex Web>",
 		},
 		{
 			name:         "paused before the first send",
@@ -698,9 +702,10 @@ func TestPartialResearchCoverageFitsAfterTheLongestNotices(t *testing.T) {
 		t.Fatalf("worst case did not name the maximum number of repositories: %q", coverage)
 	}
 	expandingText := strings.Repeat("&@ ", 20000)
-	longDexWebURL := "https://dex.example.com/" + strings.Repeat("d", 560)
+	// Sized so the run link, "/v2/run/TechBlogNewsletterFlow/flow" included, just fits maximumLinkTargetRunes.
+	longDexWebURL := "https://dex.example.com/" + strings.Repeat("d", 538)
 	longArtifactURL := "https://artifacts.example.com/" + strings.Repeat("a", 560)
-	longestDraft := DraftReadyForReview(adversarialPost(expandingText, 50), RunReference{FlowID: "flow", DexWebURL: longDexWebURL}, longArtifactURL, math.MaxInt)
+	longestDraft := DraftReadyForReview(adversarialPost(expandingText, 50), RunReference{FlowType: testFlowType, FlowID: "flow", DexWebURL: longDexWebURL}, longArtifactURL, math.MaxInt)
 	for name, message := range map[string]string{
 		"DraftReadyForReview": longestDraft,
 		"NoNotableChanges":    NoNotableChanges(expandingText, expandingText),
@@ -731,24 +736,26 @@ func TestRunReferenceMarkup(t *testing.T) {
 		want         string
 		wantLink     bool
 	}{
-		{name: "base URL with trailing slashes", runReference: RunReference{FlowID: "flow-1", DexWebURL: "https://dex.example.com///"}, want: "<https://dex.example.com/v2/runs/flow-1|L>", wantLink: true},
-		{name: "base URL with path and surrounding space", runReference: RunReference{FlowID: "flow-1", DexWebURL: " http://127.0.0.1:8802/dex/ "}, want: "<http://127.0.0.1:8802/dex/v2/runs/flow-1|L>", wantLink: true},
-		{name: "Flow ID path-escaped", runReference: RunReference{FlowID: "a/b c|d>e<f?g#h", DexWebURL: "https://dex.example.com"}, want: "<https://dex.example.com/v2/runs/a%2Fb%20c%7Cd%3Ee%3Cf%3Fg%23h|L>", wantLink: true},
-		{name: "ampersand in Flow ID escaped for Slack", runReference: RunReference{FlowID: "a&b", DexWebURL: "https://dex.example.com"}, want: "<https://dex.example.com/v2/runs/a&amp;b|L>", wantLink: true},
-		{name: "mention in Flow ID path-escaped", runReference: RunReference{FlowID: "<!channel>", DexWebURL: "https://dex.example.com"}, want: "<https://dex.example.com/v2/runs/%3C%21channel%3E|L>", wantLink: true},
+		{name: "base URL with trailing slashes", runReference: RunReference{FlowType: testFlowType, FlowID: "flow-1", DexWebURL: "https://dex.example.com///"}, want: "<https://dex.example.com/v2/run/TechBlogNewsletterFlow/flow-1|L>", wantLink: true},
+		{name: "base URL with path and surrounding space", runReference: RunReference{FlowType: testFlowType, FlowID: "flow-1", DexWebURL: " http://127.0.0.1:8802/dex/ "}, want: "<http://127.0.0.1:8802/dex/v2/run/TechBlogNewsletterFlow/flow-1|L>", wantLink: true},
+		{name: "Flow ID path-escaped", runReference: RunReference{FlowType: testFlowType, FlowID: "a/b c|d>e<f?g#h", DexWebURL: "https://dex.example.com"}, want: "<https://dex.example.com/v2/run/TechBlogNewsletterFlow/a%2Fb%20c%7Cd%3Ee%3Cf%3Fg%23h|L>", wantLink: true},
+		{name: "ampersand in Flow ID escaped for Slack", runReference: RunReference{FlowType: testFlowType, FlowID: "a&b", DexWebURL: "https://dex.example.com"}, want: "<https://dex.example.com/v2/run/TechBlogNewsletterFlow/a&amp;b|L>", wantLink: true},
+		{name: "mention in Flow ID path-escaped", runReference: RunReference{FlowType: testFlowType, FlowID: "<!channel>", DexWebURL: "https://dex.example.com"}, want: "<https://dex.example.com/v2/run/TechBlogNewsletterFlow/%3C%21channel%3E|L>", wantLink: true},
 		{name: "empty Dex Web URL", runReference: RunReference{FlowID: "flow-1"}, want: "Flow `flow-1`"},
-		{name: "blank Flow ID", runReference: RunReference{FlowID: "  ", DexWebURL: "https://dex.example.com"}, want: ""},
-		{name: "non-http scheme", runReference: RunReference{FlowID: "flow-1", DexWebURL: "javascript:alert(1)"}, want: "Flow `flow-1`"},
-		{name: "ftp scheme", runReference: RunReference{FlowID: "flow-1", DexWebURL: "ftp://dex.example.com"}, want: "Flow `flow-1`"},
-		{name: "relative URL", runReference: RunReference{FlowID: "flow-1", DexWebURL: "/dex"}, want: "Flow `flow-1`"},
-		{name: "credentials in base URL", runReference: RunReference{FlowID: "flow-1", DexWebURL: "https://admin:hunter2@dex.example.com"}, want: "Flow `flow-1`"},
-		{name: "query in base URL", runReference: RunReference{FlowID: "flow-1", DexWebURL: "https://dex.example.com/?tab=1"}, want: "Flow `flow-1`"},
-		{name: "fragment in base URL", runReference: RunReference{FlowID: "flow-1", DexWebURL: "https://dex.example.com/#x"}, want: "Flow `flow-1`"},
-		{name: "Slack syntax in base URL", runReference: RunReference{FlowID: "flow-1", DexWebURL: "https://dex.example.com/|<!channel>"}, want: "Flow `flow-1`"},
-		{name: "space in base URL", runReference: RunReference{FlowID: "flow-1", DexWebURL: "https://dex example.com"}, want: "Flow `flow-1`"},
-		{name: "secret in base URL", runReference: RunReference{FlowID: "flow-1", DexWebURL: "https://dex.example.com/xoxb-1234567890-abcdefghij"}, want: "Flow `flow-1`"},
-		{name: "base URL too long to link", runReference: RunReference{FlowID: "flow-1", DexWebURL: "https://dex.example.com/" + strings.Repeat("d", maximumLinkTargetRunes)}, want: "Flow `flow-1`"},
-		{name: "Flow ID too long to link", runReference: RunReference{FlowID: longFlowID, DexWebURL: "https://dex.example.com"}, want: "Flow `" + strings.Repeat("f", maximumFlowIDRunes-3) + ellipsis + "`"},
+		{name: "blank Flow type", runReference: RunReference{FlowType: " ", FlowID: "flow-1", DexWebURL: "https://dex.example.com"}, want: "Flow `flow-1`"},
+		{name: "Flow type path-escaped", runReference: RunReference{FlowType: "a/b", FlowID: "flow-1", DexWebURL: "https://dex.example.com"}, want: "<https://dex.example.com/v2/run/a%2Fb/flow-1|L>", wantLink: true},
+		{name: "blank Flow ID", runReference: RunReference{FlowType: testFlowType, FlowID: "  ", DexWebURL: "https://dex.example.com"}, want: ""},
+		{name: "non-http scheme", runReference: RunReference{FlowType: testFlowType, FlowID: "flow-1", DexWebURL: "javascript:alert(1)"}, want: "Flow `flow-1`"},
+		{name: "ftp scheme", runReference: RunReference{FlowType: testFlowType, FlowID: "flow-1", DexWebURL: "ftp://dex.example.com"}, want: "Flow `flow-1`"},
+		{name: "relative URL", runReference: RunReference{FlowType: testFlowType, FlowID: "flow-1", DexWebURL: "/dex"}, want: "Flow `flow-1`"},
+		{name: "credentials in base URL", runReference: RunReference{FlowType: testFlowType, FlowID: "flow-1", DexWebURL: "https://admin:hunter2@dex.example.com"}, want: "Flow `flow-1`"},
+		{name: "query in base URL", runReference: RunReference{FlowType: testFlowType, FlowID: "flow-1", DexWebURL: "https://dex.example.com/?tab=1"}, want: "Flow `flow-1`"},
+		{name: "fragment in base URL", runReference: RunReference{FlowType: testFlowType, FlowID: "flow-1", DexWebURL: "https://dex.example.com/#x"}, want: "Flow `flow-1`"},
+		{name: "Slack syntax in base URL", runReference: RunReference{FlowType: testFlowType, FlowID: "flow-1", DexWebURL: "https://dex.example.com/|<!channel>"}, want: "Flow `flow-1`"},
+		{name: "space in base URL", runReference: RunReference{FlowType: testFlowType, FlowID: "flow-1", DexWebURL: "https://dex example.com"}, want: "Flow `flow-1`"},
+		{name: "secret in base URL", runReference: RunReference{FlowType: testFlowType, FlowID: "flow-1", DexWebURL: "https://dex.example.com/xoxb-1234567890-abcdefghij"}, want: "Flow `flow-1`"},
+		{name: "base URL too long to link", runReference: RunReference{FlowType: testFlowType, FlowID: "flow-1", DexWebURL: "https://dex.example.com/" + strings.Repeat("d", maximumLinkTargetRunes)}, want: "Flow `flow-1`"},
+		{name: "Flow ID too long to link", runReference: RunReference{FlowType: testFlowType, FlowID: longFlowID, DexWebURL: "https://dex.example.com"}, want: "Flow `" + strings.Repeat("f", maximumFlowIDRunes-3) + ellipsis + "`"},
 		{name: "backticks and mentions in fallback Flow ID", runReference: RunReference{FlowID: "a`b <@U1>"}, want: "Flow `a'b &lt;@" + testZeroWidthSpace + "U1&gt;`"},
 	}
 	for _, test := range tests {

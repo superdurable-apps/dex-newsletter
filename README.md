@@ -95,9 +95,15 @@ to the same run.
    (re-validated, de-duplicated, capped at `newsletter.maxRecipients`) and sends each
    subscriber their own Gmail message. Each send persists synchronously, so it is
    repeated only if the Worker is lost mid-send (Gmail has no idempotency key). A rejected address is recorded; an unconfirmed send is recorded as
-   `uncertain` and is never resent automatically. The run's Dex Web detail view lists
-   every rejected, unconfirmed, or failed recipient under **Recipients to check before
-   resending**, and the thread gets a delivery report with counts only.
+   `uncertain` and is never resent automatically. The run's Dex Web detail view shows
+   the counts under **Delivery outcomes** and the first 20 rejected or unconfirmed
+   recipients under **Recipients to check before resending (first 20)**; the thread
+   gets a delivery report with counts only. A Gmail account failure pauses delivery
+   instead (see [Gmail](#gmail-newsletter-sender)). When more than 20 are recorded,
+   the complete list is the run's `delivery-exceptions` AttributeMap, one
+   `delivery-exceptions/recipient-NNNNN` Attribute per recipient, keyed by the
+   zero-padded delivery position. Read it with `dexcli api call GetAttributes -data
+   '{"flowId":"<flow-id>","keys":["delivery-exceptions/recipient-00000", …]}'`.
 
 Every language-model call goes through `LanguageModelGenerationFlow`, a
 provider-neutral SubFlow. Gemini is the only registered provider; adding one means
@@ -173,6 +179,25 @@ subscribers are not imported (the list starts empty), and the Step types
 between approval and its first send when the old build stopped cannot resume.
 Finish or abandon such runs before upgrading, and delete the removed Sheet
 fields from `TECH_BLOG_CONFIG_FILE`.
+
+Upgrading from the per-Action permissions (`newsletter.approve`, `.revise`,
+`.discard`, `.recover`) to `newsletter.manage` also needs care with runs that are
+open at the upgrade:
+
+- Dex records a run's Work Queue permissions only when its status is written, and
+  never removes one, so a run waiting at review or attention keeps only the old
+  names until its next decision. **Working as** `newsletter.manage` does not list
+  it, and **Anyone** lists it without Actions. Finish such runs before upgrading,
+  or, in local development, rewrite the run's unchanged status the way a Dex Web
+  edit does (a `dexcli api call SetAttributes` of `newsletter-request-status` with
+  its current value and the Actions' `actionPermissionMappings`), which adds
+  `newsletter.manage` without changing the run.
+- Behind a trusted-header boundary, map the editor role to `newsletter.manage`.
+  Dex Web rejects the old names for the new Actions.
+- A run that recorded delivery exceptions before this build shows only the ones
+  recorded after it under **Recipients to check before resending (first 20)**;
+  read the complete list from its `delivery-exceptions/recipient-NNNNN` Attributes
+  as described under [Process](#process), step 5.
 
 ### Dex Web Actions and permissions
 

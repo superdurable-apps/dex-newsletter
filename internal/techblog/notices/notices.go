@@ -67,13 +67,15 @@ const (
 
 // RunReference identifies the Dex Flow run a notice points its reader to.
 type RunReference struct {
+	// FlowType is the registered Flow type of the run.
+	FlowType string
 	// FlowID is the Dex Flow ID of the run.
 	FlowID string
 	// DexWebURL is the Dex Web base URL, such as "https://dex.example.com".
-	// When it is set and is an absolute http(s) URL without credentials,
-	// query, or fragment, notices link to
-	// strings.TrimRight(DexWebURL, "/") + "/v2/runs/" + url.PathEscape(FlowID).
-	// Otherwise notices show the Flow ID as code.
+	// When it and FlowType are set and it is an absolute http(s) URL without
+	// credentials, query, or fragment, notices link to the Dex Web v2 run page
+	// strings.TrimRight(DexWebURL, "/") + "/v2/run/" + url.PathEscape(FlowType)
+	// + "/" + url.PathEscape(FlowID). Otherwise notices show the Flow ID as code.
 	DexWebURL string
 }
 
