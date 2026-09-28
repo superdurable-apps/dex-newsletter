@@ -1,7 +1,8 @@
 # Dex Tech Blog Instructions
 
 This repository is the Dex Tech Blog process product: a Slack-triggered Dex
-Process that produces a tech blog post and newsletter, with review in Dex Web.
+Process that produces a tech blog post and newsletter, with review in Dex Web,
+mailed to readers who subscribed on the application's home page.
 It is a Superverse `go-react-v1`
 application adapted from the basic-process template (release `v1.6.1`). Read
 `.superverse/template.json` and `openapi/openapi.yaml`, then load the installed
@@ -12,33 +13,46 @@ release; external developers install the released Dex plugin in their coding
 agent. Never assume a fixed skill path. This repository must not vendor, clone,
 or initialize a project-local copy.
 
-## UI mode: No custom UI
+## UI mode: Custom UI (subscription form only)
 
-The confirmed UI mode is **No custom UI**. Dex Web v2 is the only
+The confirmed UI mode is **Custom UI**, limited to one reader-facing control:
+the home page shows the application name, a link to Dex Web, and a newsletter
+subscription form with exactly one Email input and one Subscribe button. The
+user confirmed that page, field, and action; keep it intentionally minimal (no
+other fields, preferences, or subscription management) unless the user asks
+for more and confirms a new static wireframe first. Dex Web v2 remains the only
 process-management surface: Runs, Work Queue, search, details, edits, and
-Actions all happen there. The web application is a non-business Hello World
-page that shows the application name and a link to Dex Web.
+Actions all happen there.
 
 Do not add approval, rejection, retry, escalation, status, display, list,
-search, detail, Action-proxy, or Attribute-proxy routes, components, mock
-lifecycle state, or tests. Newsletter requests start from Slack through a
-dedicated Connector Trigger, not an application HTTP webhook. If a custom
-process UI is ever required, stop and follow the dex-app-builder custom-UI
-workflow (mock-first, explicit user approval) before implementing it.
+search, detail, Action-proxy, or Attribute-proxy routes or components.
+Newsletter requests start from Slack through a dedicated Connector Trigger, not
+an application HTTP webhook. The page reuses the template's `.panel`, `label`,
+`input`, and `button` styles; add no images, icons, animation, or branding.
 
 ## HTTP contract
 
-`openapi/openapi.yaml` is the only HTTP contract source and defines exactly one
-operation, `getApplicationInfo` (`GET /api/application-info`). Never edit files
-below `internal/api/generated` or `web/src/api/generated` by hand. Change the
-spec, run `make generate`, and update server, UI, and E2E coverage in the same
-change. `internal/api` implements only that operation plus JSON 404/405
-responses.
+`openapi/openapi.yaml` is the only HTTP contract source and defines exactly two
+operations: `getApplicationInfo` (`GET /api/application-info`) and
+`subscribeToNewsletter` (`POST /api/newsletter/subscriptions`). Never edit
+files below `internal/api/generated` or `web/src/api/generated` by hand.
+Change the spec, run `make generate`, and update server, UI, mock server, and
+E2E coverage in the same change. `internal/api` implements those operations
+plus JSON 404/405 responses; the browser calls only the generated client and
+never Dex. `subscribeToNewsletter` answers the same 200 for a new and an
+existing address, so it never reveals list membership.
 
 ## Dex Flows
 
 The Flows live in `internal/techblog/*_flow.go`; the runtime that registers
-them and starts the Worker lives in `internal/runtime`. Every Flow is a Dex
+them, starts the Worker, and starts the subscriber list lives in
+`internal/runtime`. `NewsletterSubscriberListFlow` (fixed ID
+`newsletter-subscriber-list`, no Steps) is the only owner of subscriber
+addresses: one bounded Attribute written by the locked
+`AddNewsletterSubscriber` RPC and read by `TechBlogNewsletterFlow`'s
+`LoadNewsletterSubscribers` Step through `ListNewsletterSubscribers`. Keep
+subscriber data in Dex; do not add a database, cache, or spreadsheet copy
+without a storage decision the user confirms. Every Flow is a Dex
 Web v2 / FDG 2.0 definition with stable Step, Attribute, Channel, Timer, and
 RPC identities. Keep external effects in `Execute`; `WaitFor` only declares
 durable conditions and must not query or mutate providers or Dex state.
@@ -94,11 +108,10 @@ tests at `.dex-dev/` or a real connection store.
 
 `scripts/local-connections/` holds developer-only Python 3 helpers (standard
 library only) that write a Google access token into the local connection store
-(`set-google-connection.py`) or create the subscriber spreadsheet
-(`create-subscriber-sheet.py`). Never run them from tests or automation against
+(`set-google-connection.py`). Never run them from tests or automation against
 a real store, and never let them print a credential. `make test-unit` also runs
 their offline unittest, which uses temporary files and checks that the Google
-connector module versions in `local_connections.py` match `go.mod`; bump them
+connector module version in `local_connections.py` matches `go.mod`; bump them
 together.
 
 After each edit batch, run the narrowest relevant Make target. Before calling
