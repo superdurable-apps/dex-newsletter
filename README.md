@@ -9,45 +9,59 @@ application's home page. Subscribers are stored in Dex. This is a Superverse
 
 ## Not yet built
 
-Readers can subscribe on the home page, but they can't leave the list yet:
+Readers subscribe on the newsletter page and leave through the unsubscribe
+link in every email. Still missing:
 
-- **Unsubscribe:** no newsletter carries an unsubscribe link or a
-  `List-Unsubscribe` header, and there is no way to remove an address. The
-  released Gmail connector cannot set custom message headers yet.
+- **`List-Unsubscribe` headers:** mailbox providers' own one-click
+  unsubscribe button (RFC 8058) needs `List-Unsubscribe` and
+  `List-Unsubscribe-Post` headers, and the released Gmail connector cannot set
+  custom message headers yet. The link in the email body works everywhere.
 - **Confirmation:** a subscription takes effect immediately, with no
   confirmation email (double opt-in) and no rate limit, so anyone who can reach
   the page can add any address, and one client can fill the list to
   `newsletter.maxRecipients`. New readers then get 409, and every approved issue
-  goes to the addresses that were added. With no removal path yet, recovering
-  means raising `newsletter.maxRecipients` (at most 2000) or deleting the Dex
-  state, which deletes every Run too. The application server listens on every
+  goes to the addresses that were added until each recipient unsubscribes;
+  otherwise recovering means raising `newsletter.maxRecipients` (at most 2000)
+  or deleting the Dex state, which deletes every Run too. The application server listens on every
   network interface (`:$PORT`), so keep the machine on a trusted network, or
   block the port, until confirmation exists.
 
 Tracked in [#2](https://github.com/superdurable-apps/dex-newsletter/issues/2).
 
-## UI mode: Custom UI (subscription form only)
+## UI mode: Custom UI (the newsletter page only)
 
 Dex Web v2 is still the complete process-management surface: Runs, Work Queue,
 search, details, edits, and Actions. The one Dex Web v2 capability gap is a
 participant portal: newsletter readers are not Dex Web operators, and Dex Web
 runs behind the operators' trusted authentication, so readers need their own
-page to subscribe. The application adds exactly one reader-facing control:
+page to subscribe and unsubscribe. The application adds exactly one
+reader-facing page:
 
 - the home page shows the application name, an **Open Dex Web** link, and a
   newsletter subscription form with one **Email** field and a **Subscribe**
   button;
+- opened from an email's unsubscribe link (`?unsubscribe=<token>`), the same
+  page unsubscribes the reader immediately, removes the token from the address
+  bar, and says "You're unsubscribed. You won't receive future issues." The
+  subscription form stays, so an accidental unsubscribe is one resubscribe
+  away;
 - the Go HTTP server serves the page and the API;
-- two OpenAPI operations with their locally generated Go server and TypeScript
-  client:
-  `getApplicationInfo` (`GET /api/application-info`) and
-  `subscribeToNewsletter` (`POST /api/newsletter/subscriptions`).
+- three OpenAPI operations with their locally generated Go server and
+  TypeScript client: `getApplicationInfo` (`GET /api/application-info`),
+  `subscribeToNewsletter` (`POST /api/newsletter/subscriptions`), and
+  `unsubscribeFromNewsletter` (`POST /api/newsletter/unsubscriptions`).
 
 `subscribeToNewsletter` answers 200 with the canonical address whether it was
 new or already on the list; 400 for an address that is not a single
 deliverable address; 409 for every valid address, subscribed or not, once the
 list holds `newsletter.maxRecipients` addresses; and 503 when Dex cannot be
-reached. No status reveals who is subscribed. There are no
+reached. `unsubscribeFromNewsletter` answers 200 for any well-formed token,
+whether it named a subscriber or not (for example a link opened twice), 400
+for a malformed token, and 503 when Dex cannot be reached. No status reveals
+who is subscribed. Only a POST unsubscribes: the page sends it as soon as it
+opens from a link, so a plain GET of the link never changes the list, but a
+link scanner that runs the page's JavaScript does unsubscribe the reader.
+There are no
 approval, status, list, detail, or retry routes or controls. Component tests
 mock the generated client for states that are hard to trigger; `make test-e2e`
 runs the real journey against Dex. Slack ingress is a Dex Connector Trigger,
@@ -109,6 +123,9 @@ the only way in:
   dotted domain), lowercases it, and appends it unless the list already holds
   `newsletter.maxRecipients` addresses or the address. It locks the list, so
   concurrent subscriptions serialize.
+- `RemoveNewsletterSubscriber`, called by `unsubscribeFromNewsletter`, finds
+  the address whose token matches and removes it, under the same lock. A token
+  that matches nobody changes nothing.
 - `ListNewsletterSubscribers` returns a snapshot; `LoadNewsletterSubscribers`
   in each `TechBlogNewsletterFlow` run calls it from `Execute` after approval.
   It takes the same lock, which needs an open list. A failed read is retried
@@ -117,6 +134,16 @@ the only way in:
 
 The application starts the list with a constant request ID, so every restart
 finds the existing list and the Slack Trigger starts either way.
+
+Every newsletter ends with an **Unsubscribe** link to
+`<newsletter.subscriptionPageUrl>?unsubscribe=<token>`, different for each
+recipient. The token is the first 128 bits of HMAC-SHA256 over the address
+under the key in `TECH_BLOG_UNSUBSCRIBE_KEY_FILE`, so nothing is stored per
+subscriber and a token cannot be guessed from an address. The key is a runtime
+secret, never Flow state. Keep it: a new key invalidates every link already
+sent. The editor preview and the newsletter HTML artifact show an example link
+that unsubscribes nobody. An unsubscribe applies to every issue approved after
+it; a delivery already running keeps its snapshot.
 
 Open the `newsletter-subscriber-list` run in Dex Web to see the count and the
 addresses. Don't stop it: a stopped list rejects subscriptions (503) and holds
@@ -177,7 +204,7 @@ stage that needs them. Subscribers need no connection: they live in Dex.
 
 `config/tech-blog.example.json` is the complete default configuration (repository
 catalog, lookback limits, per-stage token limits, blog voice, artifact directory,
-public blog URL, subscriber and recipient cap, footer, review timing). Copy it, edit it, and set
+public blog URL, subscriber and recipient cap, footer, subscription page URL for unsubscribe links, review timing). Copy it, edit it, and set
 `TECH_BLOG_CONFIG_FILE`. Fields you omit keep their defaults; unknown fields are
 rejected. A `research.repositories` list you set replaces the default catalog;
 give every field of each entry, because an omitted field keeps the value of the
@@ -205,6 +232,7 @@ rejected with a message naming those fields; delete them.
 | `DEXCLI` | Dex CLI binary (default `dexcli` on `PATH`). Scripts fail fast unless `$DEXCLI version` matches `DEX_CLI_BASELINE`. |
 | `DEX_CONNECTOR_CONFIG_FILE` | Absolute path of the local connector connection store shown by Dex Web (default `~/.dex/connectors/connections.json`). Contains plaintext development credentials; never commit it. |
 | `TECH_BLOG_CONFIG_FILE` | Path of the non-secret process configuration JSON. |
+| `TECH_BLOG_UNSUBSCRIBE_KEY_FILE` | Required. File holding the base64 key that signs unsubscribe links (at least 32 bytes, for example `openssl rand -base64 32`). `make dev` creates `.dex-dev/unsubscribe.key` when unset. A secret: never commit it. |
 
 ## Start locally
 

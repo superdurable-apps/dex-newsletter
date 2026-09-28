@@ -336,8 +336,30 @@ func TestLocalOrUnconfiguredFallbackCredentialsPointToDexWeb(t *testing.T) {
 	}
 }
 
+func writeUnsubscribeKeyFile(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "unsubscribe.key")
+	writePrivateFile(t, path, []byte("c2VjcmV0LXNlY3JldC1zZWNyZXQtc2VjcmV0LXNlY3JldA==\n"))
+	return path
+}
+
+func TestLoadProcessInputsRequiresTheUnsubscribeKey(t *testing.T) {
+	t.Setenv(ProcessConfigurationFileEnvironmentVariable, "")
+	t.Setenv(localconfig.EnvironmentVariable, filepath.Join(t.TempDir(), "connections.json"))
+	for name, path := range map[string]string{"unset": "", "missing file": filepath.Join(t.TempDir(), "missing.key")} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(UnsubscribeKeyFileEnvironmentVariable, path)
+			logger, _ := newLogRecorder()
+			if _, err := loadProcessInputs(logger); err == nil || !strings.Contains(err.Error(), UnsubscribeKeyFileEnvironmentVariable) {
+				t.Fatalf("loadProcessInputs() error = %v; want one naming %s", err, UnsubscribeKeyFileEnvironmentVariable)
+			}
+		})
+	}
+}
+
 func TestLoadProcessInputsStartsOnFreshMachine(t *testing.T) {
 	t.Setenv(ProcessConfigurationFileEnvironmentVariable, "")
+	t.Setenv(UnsubscribeKeyFileEnvironmentVariable, writeUnsubscribeKeyFile(t))
 	t.Setenv(localconfig.EnvironmentVariable, filepath.Join(t.TempDir(), "connections.json"))
 	logger, logs := newLogRecorder()
 
@@ -504,9 +526,18 @@ func (record logRecord) require(t *testing.T, key string, want string) {
 }
 
 type scriptedSubscriberAdder struct {
-	result   techblog.AddNewsletterSubscriberResult
-	err      error
-	deadline bool
+	result        techblog.AddNewsletterSubscriberResult
+	err           error
+	deadline      bool
+	removeResult  techblog.RemoveNewsletterSubscriberResult
+	removeErr     error
+	removedTokens []string
+}
+
+func (adder *scriptedSubscriberAdder) RemoveNewsletterSubscriber(ctx context.Context, token string) (techblog.RemoveNewsletterSubscriberResult, error) {
+	_, adder.deadline = ctx.Deadline()
+	adder.removedTokens = append(adder.removedTokens, token)
+	return adder.removeResult, adder.removeErr
 }
 
 func (adder *scriptedSubscriberAdder) AddNewsletterSubscriber(ctx context.Context, _ string) (techblog.AddNewsletterSubscriberResult, error) {
@@ -581,5 +612,28 @@ func TestStartSubscriberListStopsWhenCanceled(t *testing.T) {
 	}, logger)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("startSubscriberList() = %v; want context.Canceled", err)
+	}
+}
+
+func TestNewsletterUnsubscriptionsAnswerEveryOutcomeAlike(t *testing.T) {
+	for _, outcome := range []techblog.UnsubscriptionOutcome{
+		techblog.UnsubscriptionRemoved, techblog.UnsubscriptionNotSubscribed, techblog.UnsubscriptionInvalidToken,
+	} {
+		adder := &scriptedSubscriberAdder{removeResult: techblog.RemoveNewsletterSubscriberResult{Outcome: outcome}}
+		if err := (newsletterSubscriptions{list: adder}).Unsubscribe(context.Background(), "Ab0-_Ab0-_Ab0-_Ab0-_Ab"); err != nil {
+			t.Errorf("Unsubscribe() with outcome %s = %v, want nil", outcome, err)
+		}
+		if !adder.deadline {
+			t.Errorf("Unsubscribe() called the list without a deadline")
+		}
+	}
+	adder := &scriptedSubscriberAdder{removeErr: errors.New("connection refused")}
+	err := (newsletterSubscriptions{list: adder}).Unsubscribe(context.Background(), "Ab0-_Ab0-_Ab0-_Ab0-_Ab")
+	if err == nil || strings.Contains(err.Error(), "Ab0-_") {
+		t.Fatalf("Unsubscribe() error = %v; want an error without the token", err)
+	}
+	adder = &scriptedSubscriberAdder{removeResult: techblog.RemoveNewsletterSubscriberResult{Outcome: "surprise"}}
+	if err := (newsletterSubscriptions{list: adder}).Unsubscribe(context.Background(), "Ab0-_Ab0-_Ab0-_Ab0-_Ab"); err == nil {
+		t.Fatal("Unsubscribe() accepted an unknown outcome")
 	}
 }

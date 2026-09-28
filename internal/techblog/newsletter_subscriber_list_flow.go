@@ -3,6 +3,7 @@ package techblog
 import (
 	"github.com/superdurable-apps/dex-newsletter/internal/techblog/config"
 	"github.com/superdurable-apps/dex-newsletter/internal/techblog/subscribers"
+	"github.com/superdurable-apps/dex-newsletter/internal/techblog/unsubscribe"
 	"github.com/superdurable/dex/sdk-go/dex"
 )
 
@@ -30,6 +31,22 @@ const (
 	SubscriptionListFull          SubscriptionOutcome = "list-full"
 )
 
+// UnsubscriptionOutcome is the result of one RemoveNewsletterSubscriber call.
+type UnsubscriptionOutcome string
+
+// Unsubscription outcomes. The API answers removed and not-subscribed alike.
+const (
+	UnsubscriptionRemoved       UnsubscriptionOutcome = "removed"
+	UnsubscriptionNotSubscribed UnsubscriptionOutcome = "not-subscribed"
+	UnsubscriptionInvalidToken  UnsubscriptionOutcome = "invalid-token"
+)
+
+// RemoveNewsletterSubscriberResult reports how one unsubscription was
+// handled. It never carries the address.
+type RemoveNewsletterSubscriberResult struct {
+	Outcome UnsubscriptionOutcome `json:"outcome"`
+}
+
 // AddNewsletterSubscriberResult reports how one subscription was handled.
 // Email is the canonical address when Outcome is added or already-subscribed.
 type AddNewsletterSubscriberResult struct {
@@ -49,16 +66,19 @@ var (
 // NewsletterSubscriberListFlow is the durable owner of the newsletter
 // subscriber list. It has no Steps: it stays open and serves typed RPCs. The
 // application's subscription form adds addresses through
-// AddNewsletterSubscriber, and TechBlogNewsletterFlow reads a snapshot through
-// ListNewsletterSubscribers when an issue is approved for delivery.
+// AddNewsletterSubscriber, an email's unsubscribe link removes one through
+// RemoveNewsletterSubscriber, and TechBlogNewsletterFlow reads a snapshot
+// through ListNewsletterSubscribers when an issue is approved for delivery.
 type NewsletterSubscriberListFlow struct {
 	dex.FlowDefaults
 	maxSubscribers int
+	unsubscribeKey unsubscribe.Key
 }
 
-// NewNewsletterSubscriberListFlow caps the list at newsletter.maxRecipients.
-func NewNewsletterSubscriberListFlow(configuration config.ProcessConfiguration) *NewsletterSubscriberListFlow {
-	return &NewsletterSubscriberListFlow{maxSubscribers: configuration.Newsletter.MaxRecipients}
+// NewNewsletterSubscriberListFlow caps the list at newsletter.maxRecipients
+// and matches unsubscribe tokens with unsubscribeKey.
+func NewNewsletterSubscriberListFlow(configuration config.ProcessConfiguration, unsubscribeKey unsubscribe.Key) *NewsletterSubscriberListFlow {
+	return &NewsletterSubscriberListFlow{maxSubscribers: configuration.Newsletter.MaxRecipients, unsubscribeKey: unsubscribeKey}
 }
 
 // NewsletterSubscriberListStartOptions starts the list once. With the
@@ -85,6 +105,9 @@ func (*NewsletterSubscriberListFlow) GetSteps() []dex.StepDef { return nil }
 func (flow *NewsletterSubscriberListFlow) GetRPCs() []dex.RPCDef {
 	return []dex.RPCDef{
 		dex.DefineRPC(flow.AddNewsletterSubscriber, &dex.RPCOptions{
+			LockAttributes: []dex.AttributeLock{dex.LockAttribute(newsletterSubscribers), dex.LockAttribute(newsletterSubscriberCount)},
+		}),
+		dex.DefineRPC(flow.RemoveNewsletterSubscriber, &dex.RPCOptions{
 			LockAttributes: []dex.AttributeLock{dex.LockAttribute(newsletterSubscribers), dex.LockAttribute(newsletterSubscriberCount)},
 		}),
 		dex.DefineRPC(flow.ListNewsletterSubscribers, &dex.RPCOptions{
@@ -118,6 +141,27 @@ func (flow *NewsletterSubscriberListFlow) AddNewsletterSubscriber(ctx dex.Contex
 		}
 	}
 	return &dex.RPCResult[AddNewsletterSubscriberResult]{Output: result}, nil
+}
+
+// RemoveNewsletterSubscriber removes the subscriber an unsubscribe token
+// names. A token that names no current subscriber, for example after an
+// earlier unsubscribe, is not-subscribed without a write, so opening a link
+// twice is harmless.
+func (flow *NewsletterSubscriberListFlow) RemoveNewsletterSubscriber(ctx dex.Context, token string) (*dex.RPCResult[RemoveNewsletterSubscriberResult], error) {
+	current, err := optionalValue(newsletterSubscribers.Get(ctx))
+	if err != nil {
+		return nil, err
+	}
+	updated, result := removeSubscriber(current, token, flow.unsubscribeKey)
+	if result.Outcome == UnsubscriptionRemoved {
+		if err := newsletterSubscribers.Set(ctx, updated); err != nil {
+			return nil, err
+		}
+		if err := newsletterSubscriberCount.Set(ctx, int64(len(updated))); err != nil {
+			return nil, err
+		}
+	}
+	return &dex.RPCResult[RemoveNewsletterSubscriberResult]{Output: result}, nil
 }
 
 // ListNewsletterSubscribers returns the current subscriber addresses in
@@ -184,8 +228,32 @@ func addSubscriber(current []string, email string, maxSubscribers int) ([]string
 	return append(updated, address), AddNewsletterSubscriberResult{Outcome: SubscriptionAdded, Email: address}
 }
 
+// removeSubscriber returns the list without the subscriber token names, or
+// the unchanged list with the reason nothing was removed. It checks every
+// address, so the time taken does not depend on where the match is, and it
+// never modifies current.
+func removeSubscriber(current []string, token string, key unsubscribe.Key) ([]string, RemoveNewsletterSubscriberResult) {
+	if !unsubscribe.ValidToken(token) {
+		return current, RemoveNewsletterSubscriberResult{Outcome: UnsubscriptionInvalidToken}
+	}
+	match := -1
+	for index, address := range current {
+		if key.Matches(token, address) && match < 0 {
+			match = index
+		}
+	}
+	if match < 0 {
+		return current, RemoveNewsletterSubscriberResult{Outcome: UnsubscriptionNotSubscribed}
+	}
+	updated := make([]string, 0, len(current)-1)
+	updated = append(updated, current[:match]...)
+	updated = append(updated, current[match+1:]...)
+	return updated, RemoveNewsletterSubscriberResult{Outcome: UnsubscriptionRemoved}
+}
+
 var _ dex.Flow = (*NewsletterSubscriberListFlow)(nil)
 var _ dex.RPC[string, AddNewsletterSubscriberResult] = (*NewsletterSubscriberListFlow)(nil).AddNewsletterSubscriber
+var _ dex.RPC[string, RemoveNewsletterSubscriberResult] = (*NewsletterSubscriberListFlow)(nil).RemoveNewsletterSubscriber
 var _ dex.RPC[dex.None, []string] = (*NewsletterSubscriberListFlow)(nil).ListNewsletterSubscribers
 var _ dex.RPC[dex.None, map[string]any] = (*NewsletterSubscriberListFlow)(nil).GetDexSummary
 var _ dex.RPC[dex.None, map[string]any] = (*NewsletterSubscriberListFlow)(nil).GetDexDisplay

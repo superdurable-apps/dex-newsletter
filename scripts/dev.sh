@@ -278,10 +278,26 @@ build_application() {
   go build -o "${application_binary}" ./cmd/server
 }
 
+# ensure_unsubscribe_key creates a private random key for unsubscribe links
+# in the Dex state directory unless TECH_BLOG_UNSUBSCRIBE_KEY_FILE names one.
+# Keep the file: a new key invalidates every unsubscribe link already sent.
+ensure_unsubscribe_key() {
+  if [[ -n "${TECH_BLOG_UNSUBSCRIBE_KEY_FILE:-}" ]]; then
+    return 0
+  fi
+  local key_file="${state_directory}/unsubscribe.key"
+  if [[ ! -s "${key_file}" ]]; then
+    (umask 077 && python3 -c 'import base64, secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())' >"${key_file}")
+    echo "Created the unsubscribe link key ${key_file}; keep it, because a new key invalidates every link already sent."
+  fi
+  export TECH_BLOG_UNSUBSCRIBE_KEY_FILE="${key_file}"
+}
+
 application_environment() {
   export DEX_FLOW_SERVICE_ADDRESS="127.0.0.1:${dex_port}"
   export DEX_BLOB_CACHE_DIR="${state_directory}/application-blobs"
   mkdir -p "${DEX_BLOB_CACHE_DIR}"
+  ensure_unsubscribe_key
   if [[ -z "${DEX_CONNECTOR_CONFIG_FILE:-}" ]]; then
     echo "warning: DEX_CONNECTOR_CONFIG_FILE is not set, so every connection is unconfigured. Export it to the" >&2
     echo "         connections file shown in Dex Web Connections (normally ${connector_config_directory}/connections.json)." >&2

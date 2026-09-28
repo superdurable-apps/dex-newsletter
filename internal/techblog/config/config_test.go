@@ -189,6 +189,8 @@ func TestValidateReportsInvalidFields(t *testing.T) {
 		}, "duplicates"},
 		{"default above max", func(c *ProcessConfiguration) { c.Research.DefaultLookbackDays = 120 }, "defaultLookbackDays"},
 		{"recipient cap", func(c *ProcessConfiguration) { c.Newsletter.MaxRecipients = 5000 }, "maxRecipients"},
+		{"relative subscription page", func(c *ProcessConfiguration) { c.Newsletter.SubscriptionPageURL = "/newsletter" }, "subscriptionPageUrl"},
+		{"missing subscription page", func(c *ProcessConfiguration) { c.Newsletter.SubscriptionPageURL = "" }, "subscriptionPageUrl"},
 		{"reminder interval", func(c *ProcessConfiguration) { c.Review.ReminderInterval = Duration(time.Second) }, "reminderInterval"},
 		{"relative base URL", func(c *ProcessConfiguration) { c.Blog.PublicBaseURL = "/posts" }, "publicBaseUrl"},
 	}

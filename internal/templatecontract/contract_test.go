@@ -150,7 +150,7 @@ func TestCustomUIScope(t *testing.T) {
 	for _, operation := range operations {
 		operationIDs = append(operationIDs, operation[1])
 	}
-	if want := []string{"getApplicationInfo", "subscribeToNewsletter"}; !reflect.DeepEqual(operationIDs, want) || strings.Count(spec, "operationId:") != len(want) {
+	if want := []string{"getApplicationInfo", "subscribeToNewsletter", "unsubscribeFromNewsletter"}; !reflect.DeepEqual(operationIDs, want) || strings.Count(spec, "operationId:") != len(want) {
 		t.Errorf("OpenAPI operations = %v, want exactly %v", operationIDs, want)
 	}
 	for _, removed := range []string{"internal/process"} {

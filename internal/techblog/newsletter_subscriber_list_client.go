@@ -57,6 +57,15 @@ func (listClient NewsletterSubscriberListClient) AddNewsletterSubscriber(ctx con
 	return result, err
 }
 
+// RemoveNewsletterSubscriber removes the subscriber a link token names. Like
+// AddNewsletterSubscriber it is called from the application API, so it waits
+// out a concurrent holder of the list lock until ctx ends.
+func (listClient NewsletterSubscriberListClient) RemoveNewsletterSubscriber(ctx context.Context, token string) (RemoveNewsletterSubscriberResult, error) {
+	var result RemoveNewsletterSubscriberResult
+	err := listClient.invokeLocked(ctx, listClient.flow.RemoveNewsletterSubscriber, token, &result)
+	return result, err
+}
+
 // ListNewsletterSubscribers returns the current subscriber addresses in one
 // attempt. It runs inside a Step, whose retry policy owns every retry: a
 // concurrent subscription holding the list lock returns dex.RetryAfter, so

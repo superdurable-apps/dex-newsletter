@@ -13,16 +13,24 @@ import (
 	"github.com/superdurable-apps/dex-newsletter/internal/api/generated"
 )
 
-// fakeSubscriptions records Subscribe calls and returns a scripted result.
+// fakeSubscriptions records Subscribe and Unsubscribe calls and returns
+// scripted results.
 type fakeSubscriptions struct {
-	calls []string
-	email string
-	err   error
+	calls            []string
+	email            string
+	err              error
+	unsubscribeCalls []string
+	unsubscribeErr   error
 }
 
 func (fake *fakeSubscriptions) Subscribe(_ context.Context, email string) (string, error) {
 	fake.calls = append(fake.calls, email)
 	return fake.email, fake.err
+}
+
+func (fake *fakeSubscriptions) Unsubscribe(_ context.Context, token string) error {
+	fake.unsubscribeCalls = append(fake.unsubscribeCalls, token)
+	return fake.unsubscribeErr
 }
 
 func newTestServer(t *testing.T, info api.ApplicationInfo) *httptest.Server {
@@ -96,6 +104,7 @@ func TestNoProcessManagementRoutes(t *testing.T) {
 		{http.MethodGet, "/api/newsletter/subscriptions", http.StatusMethodNotAllowed, "method_not_allowed"},
 		{http.MethodGet, "/api/newsletter/subscriptions/someone@example.com", http.StatusNotFound, "not_found"},
 		{http.MethodDelete, "/api/newsletter/subscriptions", http.StatusMethodNotAllowed, "method_not_allowed"},
+		{http.MethodGet, "/api/newsletter/unsubscriptions", http.StatusMethodNotAllowed, "method_not_allowed"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
@@ -218,6 +227,76 @@ func postSubscription(t *testing.T, server *httptest.Server, body string) *http.
 	response, err := server.Client().Post(server.URL+"/api/newsletter/subscriptions", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST subscription: %v", err)
+	}
+	return response
+}
+
+const testToken = "Ab0-_Ab0-_Ab0-_Ab0-_Ab"
+
+func TestUnsubscribeFromNewsletterThroughGeneratedClient(t *testing.T) {
+	subscriptions := &fakeSubscriptions{}
+	server := newSubscriptionTestServer(t, api.ApplicationInfo{Name: "Dex Tech Blog"}, subscriptions)
+	client, err := generated.NewClient(server.URL, generated.WithClient(server.Client()))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	response, err := client.UnsubscribeFromNewsletter(context.Background(), &generated.NewsletterUnsubscriptionRequest{Token: testToken})
+	if err != nil {
+		t.Fatalf("UnsubscribeFromNewsletter: %v", err)
+	}
+	if unsubscribed, ok := response.(*generated.NewsletterUnsubscription); !ok || unsubscribed.Status != generated.NewsletterUnsubscriptionStatusUnsubscribed {
+		t.Fatalf("response = %#v, want status unsubscribed", response)
+	}
+	if len(subscriptions.unsubscribeCalls) != 1 || subscriptions.unsubscribeCalls[0] != testToken {
+		t.Fatalf("Unsubscribe calls = %q, want the token once", subscriptions.unsubscribeCalls)
+	}
+}
+
+func TestUnsubscribeFromNewsletterReportsAnUnavailableListWithoutTheCause(t *testing.T) {
+	server := newSubscriptionTestServer(t, api.ApplicationInfo{Name: "Dex Tech Blog"}, &fakeSubscriptions{unsubscribeErr: errors.New("connection refused")})
+	response := postJSON(t, server, "/api/newsletter/unsubscriptions", `{"token":"`+testToken+`"}`)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusServiceUnavailable)
+	}
+	var body struct{ Error, Message string }
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if body.Error != "unavailable" || body.Message == "" || strings.Contains(body.Message, "refused") {
+		t.Fatalf("error body = %+v", body)
+	}
+}
+
+func TestUnsubscribeFromNewsletterRejectsMalformedTokens(t *testing.T) {
+	for name, body := range map[string]string{
+		"missing token": `{}`,
+		"short token":   `{"token":"abc"}`,
+		"long token":    `{"token":"` + testToken + `x"}`,
+		"bad character": `{"token":"` + testToken[:21] + `="}`,
+		"extra field":   `{"token":"` + testToken + `","email":"reader@example.com"}`,
+		"not JSON":      `token=` + testToken,
+	} {
+		t.Run(name, func(t *testing.T) {
+			subscriptions := &fakeSubscriptions{}
+			server := newSubscriptionTestServer(t, api.ApplicationInfo{Name: "Dex Tech Blog"}, subscriptions)
+			response := postJSON(t, server, "/api/newsletter/unsubscriptions", body)
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusBadRequest)
+			}
+			if len(subscriptions.unsubscribeCalls) != 0 {
+				t.Fatalf("Unsubscribe was called for a request outside the contract: %q", subscriptions.unsubscribeCalls)
+			}
+		})
+	}
+}
+
+func postJSON(t *testing.T, server *httptest.Server, path string, body string) *http.Response {
+	t.Helper()
+	response, err := server.Client().Post(server.URL+path, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
 	}
 	return response
 }

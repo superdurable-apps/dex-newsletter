@@ -42,6 +42,10 @@ trap 'exit 143' TERM
 
 npm --prefix web run build
 go build -o "${server_binary}" ./cmd/server
+# A throwaway unsubscribe key; the Playwright suite reads it to build links.
+unsubscribe_key_file="${artifact_directory}/unsubscribe.key"
+(umask 077 && python3 -c 'import base64, secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())' >"${unsubscribe_key_file}")
+export TECH_BLOG_UNSUBSCRIBE_KEY_FILE="${unsubscribe_key_file}"
 PORT="${port}" "${server_binary}" >"${app_log}" 2>&1 &
 app_pid=$!
 deadline=$((SECONDS + 45))

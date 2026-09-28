@@ -113,7 +113,8 @@
   },
   "newsletter": {
     "maxRecipients": 500,
-    "footer": "You are receiving this because you subscribed to Dex engineering updates."
+    "footer": "You are receiving this because you subscribed to Dex engineering updates.",
+    "subscriptionPageUrl": "http://127.0.0.1:8080/"
   },
   "review": {
     "required": true,

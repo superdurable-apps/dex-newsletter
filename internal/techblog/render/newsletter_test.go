@@ -279,7 +279,9 @@ func TestRenderNewsletterTextBody(t *testing.T) {
 		"-- \n" +
 		"You subscribed to Dex updates.\n" +
 		"\n" +
-		"Unsubscribe (https://dex.example.com/unsubscribe)\n"
+		"Unsubscribe (https://dex.example.com/unsubscribe)\n" +
+		"\n" +
+		"Unsubscribe: " + UnsubscribeURLPlaceholder + "\n"
 	if rendered.TextBody != want {
 		t.Fatalf("text body mismatch\n got:\n%s\nwant:\n%s", rendered.TextBody, want)
 	}
@@ -309,7 +311,11 @@ func TestRenderNewsletterTextBodyBlocks(t *testing.T) {
 			t.Errorf("text body does not contain %q:\n%s", want, rendered.TextBody)
 		}
 	}
-	for _, absent := range []string{"Read on the web", "Highlights", "References", "-- \n", "By "} {
+	// With no footer configured, the signature holds only the unsubscribe link.
+	if !strings.HasSuffix(rendered.TextBody, "-- \nUnsubscribe: "+UnsubscribeURLPlaceholder+"\n") {
+		t.Errorf("text body does not end with the unsubscribe link:\n%s", rendered.TextBody)
+	}
+	for _, absent := range []string{"Read on the web", "Highlights", "References", "By "} {
 		if strings.Contains(rendered.TextBody, absent) {
 			t.Errorf("text body contains %q", absent)
 		}
@@ -483,7 +489,8 @@ func TestRenderNewsletterOutlookContainer(t *testing.T) {
 		wantFooter bool
 	}{
 		{name: "with footer", footer: sampleFooter, wantFooter: true},
-		{name: "without footer", footer: "", wantFooter: false},
+		// The footer table always holds the unsubscribe link.
+		{name: "without footer", footer: "", wantFooter: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -645,5 +652,55 @@ func TestMarkupProblemsDetectsUnsafeMarkup(t *testing.T) {
 	}
 	if problems := markupProblems(`<p class="x">a &lt;script&gt; <a href="https://a.example" rel="noopener">b</a></p>`, blogAllowedTags); len(problems) != 0 {
 		t.Fatalf("markupProblems flagged safe markup: %v", problems)
+	}
+}
+
+func TestRenderNewsletterAlwaysLinksToTheUnsubscribePlaceholder(t *testing.T) {
+	for name, footer := range map[string]string{"with footer": sampleFooter, "without footer": ""} {
+		t.Run(name, func(t *testing.T) {
+			rendered, err := RenderNewsletter(sampleNewsletterDraft(), sampleBlogPost(), samplePresentation(), footer)
+			if err != nil {
+				t.Fatalf("RenderNewsletter: %v", err)
+			}
+			if count := strings.Count(rendered.HTMLBody, `href="`+UnsubscribeURLPlaceholder+`"`); count != 1 {
+				t.Errorf("HTML body links to the placeholder %d times, want 1", count)
+			}
+			if count := strings.Count(rendered.TextBody, "Unsubscribe: "+UnsubscribeURLPlaceholder); count != 1 {
+				t.Errorf("text body names the placeholder %d times, want 1", count)
+			}
+		})
+	}
+}
+
+func TestPersonalizeNewsletterReplacesThePlaceholderForOneRecipient(t *testing.T) {
+	rendered, err := RenderNewsletter(sampleNewsletterDraft(), sampleBlogPost(), samplePresentation(), sampleFooter)
+	if err != nil {
+		t.Fatalf("RenderNewsletter: %v", err)
+	}
+	link := "https://news.example.com/?ref=mail&unsubscribe=Ab0-_Ab0-_Ab0-_Ab0-_Ab"
+	personalized, err := PersonalizeNewsletter(rendered, link)
+	if err != nil {
+		t.Fatalf("PersonalizeNewsletter: %v", err)
+	}
+	if strings.Contains(personalized.HTMLBody, UnsubscribeURLPlaceholder) || strings.Contains(personalized.TextBody, UnsubscribeURLPlaceholder) {
+		t.Fatal("the placeholder survived personalization")
+	}
+	if !strings.Contains(personalized.HTMLBody, `href="https://news.example.com/?ref=mail&amp;unsubscribe=Ab0-_Ab0-_Ab0-_Ab0-_Ab"`) {
+		t.Error("the HTML body does not carry the HTML-escaped link")
+	}
+	if !strings.Contains(personalized.TextBody, "Unsubscribe: "+link+"\n") {
+		t.Error("the text body does not carry the link")
+	}
+	if personalized.Subject != rendered.Subject || strings.Contains(rendered.HTMLBody, link) {
+		t.Error("personalization changed the subject or its input")
+	}
+	for _, invalid := range []string{"", "javascript:alert(1)", "/relative", `https://example.com/"><script>`} {
+		if _, err := PersonalizeNewsletter(rendered, invalid); err == nil && !strings.Contains(invalid, "example.com") {
+			t.Errorf("PersonalizeNewsletter accepted %q", invalid)
+		}
+	}
+	quoted, err := PersonalizeNewsletter(rendered, `https://example.com/"><script>`)
+	if err == nil && strings.Contains(quoted.HTMLBody, `"><script>`) {
+		t.Error("a quote in the link broke out of the href attribute")
 	}
 }

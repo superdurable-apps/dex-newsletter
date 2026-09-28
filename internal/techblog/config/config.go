@@ -130,9 +130,12 @@ type BlogConfiguration struct {
 // NewsletterConfiguration bounds the subscriber list and delivery.
 // MaxRecipients caps both the subscriber list, which rejects new
 // subscriptions once full, and each newsletter's recipients.
+// SubscriptionPageURL is the public address of the application's newsletter
+// page; every email's unsubscribe link points there.
 type NewsletterConfiguration struct {
-	MaxRecipients int    `json:"maxRecipients"`
-	Footer        string `json:"footer"`
+	MaxRecipients       int    `json:"maxRecipients"`
+	Footer              string `json:"footer"`
+	SubscriptionPageURL string `json:"subscriptionPageUrl"`
 }
 
 // ReviewConfiguration configures the editorial approval gate.
@@ -208,8 +211,9 @@ func Default() ProcessConfiguration {
 			ArtifactDirectory: "artifacts",
 		},
 		Newsletter: NewsletterConfiguration{
-			MaxRecipients: 500,
-			Footer:        "You are receiving this because you subscribed to Dex engineering updates.",
+			MaxRecipients:       500,
+			Footer:              "You are receiving this because you subscribed to Dex engineering updates.",
+			SubscriptionPageURL: "http://127.0.0.1:8080/",
 		},
 		Review: ReviewConfiguration{
 			Required:         true,
@@ -379,6 +383,9 @@ func (configuration ProcessConfiguration) Validate() error {
 	newsletter := configuration.Newsletter
 	if newsletter.MaxRecipients < 1 || newsletter.MaxRecipients > 2000 {
 		add("newsletter.maxRecipients must be between 1 and 2000 (Gmail daily sending limits)")
+	}
+	if !isAbsoluteHTTPURL(newsletter.SubscriptionPageURL) {
+		add("newsletter.subscriptionPageUrl must be an absolute http(s) URL")
 	}
 
 	review := configuration.Review

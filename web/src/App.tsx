@@ -1,5 +1,5 @@
-import { type FormEvent, useEffect, useState } from 'react';
-import { getApplicationInfo, subscribeToNewsletter } from './api/generated/sdk.gen';
+import { type FormEvent, useEffect, useRef, useState } from 'react';
+import { getApplicationInfo, subscribeToNewsletter, unsubscribeFromNewsletter } from './api/generated/sdk.gen';
 import type { ApplicationInfo } from './api/generated/types.gen';
 
 type LoadState =
@@ -11,9 +11,28 @@ type SubscriptionState =
   | { status: 'idle' }
   | { status: 'submitting' }
   | { status: 'subscribed'; email: string }
+  | { status: 'unsubscribing' }
+  | { status: 'unsubscribed' }
   | { status: 'failed'; message: string };
 
 const unavailableMessage = 'Subscriptions are unavailable right now. Try again in a minute.';
+const unsubscribeUnavailableMessage = "We couldn't unsubscribe you right now. Open the link again in a minute.";
+const invalidLinkMessage = "This unsubscribe link isn't valid. Open the whole link from the newsletter email.";
+const unsubscribeParameter = 'unsubscribe';
+const unsubscribeToken = /^[A-Za-z0-9_-]{22}$/;
+
+// takeUnsubscribeToken reads the token of an email's unsubscribe link and
+// removes it from the address bar, so it does not linger in history or get
+// sent again on reload. It returns null when the page was not opened from a
+// link.
+function takeUnsubscribeToken(): string | null {
+  const url = new URL(window.location.href);
+  const token = url.searchParams.get(unsubscribeParameter);
+  if (token === null) return null;
+  url.searchParams.delete(unsubscribeParameter);
+  window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash);
+  return token;
+}
 
 // serverMessage returns the message of an OpenAPI Error body. Network and
 // parse failures surface as Error instances or text and get the generic copy.
@@ -25,13 +44,18 @@ function serverMessage(error: unknown) {
     : undefined;
 }
 
-// Application shell. Its only control is the newsletter subscription form;
-// Dex Web v2 remains the only process-management surface, so this page must
-// not grow approval, status, list, detail, or retry controls.
+// The newsletter page. Its only control is the subscription form; opening an
+// email's unsubscribe link here unsubscribes immediately and keeps the form
+// for resubscribing. Dex Web v2 remains the only process-management surface,
+// so this page must not grow approval, status, list, detail, or retry controls.
 export function App() {
   const [state, setState] = useState<LoadState>({ status: 'loading' });
   const [email, setEmail] = useState('');
-  const [subscription, setSubscription] = useState<SubscriptionState>({ status: 'idle' });
+  const [unsubscribeLinkToken] = useState(takeUnsubscribeToken);
+  const [subscription, setSubscription] = useState<SubscriptionState>(() =>
+    unsubscribeLinkToken === null ? { status: 'idle' } : { status: 'unsubscribing' },
+  );
+  const unsubscribeStarted = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -47,6 +71,29 @@ export function App() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    // The ref keeps React StrictMode's second effect run from sending twice.
+    if (unsubscribeLinkToken === null || unsubscribeStarted.current) return;
+    unsubscribeStarted.current = true;
+    if (!unsubscribeToken.test(unsubscribeLinkToken)) {
+      setSubscription({ status: 'failed', message: invalidLinkMessage });
+      return;
+    }
+    unsubscribeFromNewsletter({ body: { token: unsubscribeLinkToken } })
+      .then((response) => {
+        if (response.data?.status === 'unsubscribed') {
+          setSubscription({ status: 'unsubscribed' });
+        } else {
+          const message = serverMessage(response.error);
+          setSubscription({
+            status: 'failed',
+            message: response.response?.status === 400 ? invalidLinkMessage : message ?? unsubscribeUnavailableMessage,
+          });
+        }
+      })
+      .catch(() => setSubscription({ status: 'failed', message: unsubscribeUnavailableMessage }));
+  }, [unsubscribeLinkToken]);
 
   async function subscribe(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -107,7 +154,9 @@ export function App() {
         </form>
         {/* One live region that stays mounted announces each result. */}
         <p role="status" className="success">
-          {subscription.status === 'subscribed' ? `Subscribed as ${subscription.email}.` : ''}
+          {subscription.status === 'subscribed' && `Subscribed as ${subscription.email}.`}
+          {subscription.status === 'unsubscribing' && 'Unsubscribing…'}
+          {subscription.status === 'unsubscribed' && "You're unsubscribed. You won't receive future issues."}
         </p>
         {subscription.status === 'failed' && <p role="alert" className="error">{subscription.message}</p>}
       </section>
