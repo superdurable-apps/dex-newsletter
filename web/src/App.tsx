@@ -80,19 +80,22 @@ export function App() {
       setSubscription({ status: 'failed', message: invalidLinkMessage });
       return;
     }
+    // A subscribe the reader started meanwhile owns the page; keep its state.
+    const settle = (next: SubscriptionState) =>
+      setSubscription((current) => (current.status === 'unsubscribing' ? next : current));
     unsubscribeFromNewsletter({ body: { token: unsubscribeLinkToken } })
       .then((response) => {
         if (response.data?.status === 'unsubscribed') {
-          setSubscription({ status: 'unsubscribed' });
+          settle({ status: 'unsubscribed' });
         } else {
           const message = serverMessage(response.error);
-          setSubscription({
+          settle({
             status: 'failed',
             message: response.response?.status === 400 ? invalidLinkMessage : message ?? unsubscribeUnavailableMessage,
           });
         }
       })
-      .catch(() => setSubscription({ status: 'failed', message: unsubscribeUnavailableMessage }));
+      .catch(() => settle({ status: 'failed', message: unsubscribeUnavailableMessage }));
   }, [unsubscribeLinkToken]);
 
   async function subscribe(event: FormEvent<HTMLFormElement>) {

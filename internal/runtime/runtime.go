@@ -9,8 +9,11 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -71,6 +74,10 @@ func New(logger *slog.Logger) (*Runtime, error) {
 	unsubscribeLinks, err := unsubscribe.NewLinks(inputs.unsubscribeKey, configuration.Newsletter.SubscriptionPageURL)
 	if err != nil {
 		return nil, err
+	}
+	if pointsAtThisMachine(configuration.Newsletter.SubscriptionPageURL) {
+		logger.Warn("newsletter.subscriptionPageUrl points at this machine, so unsubscribe links in sent newsletters work only here; set it to the page address readers use",
+			"subscription_page_url", configuration.Newsletter.SubscriptionPageURL)
 	}
 	languageModel := techblog.NewLanguageModelGenerationFlow(connections.gemini)
 	research := techblog.NewRepositoryChangeResearchFlow(configuration, connections.github, languageModel)
@@ -213,6 +220,21 @@ func loadProcessInputs(logger *slog.Logger) (processInputs, error) {
 		return processInputs{}, err
 	}
 	return processInputs{configuration: configuration, unsubscribeKey: unsubscribeKey, store: store, connections: connections}, nil
+}
+
+// pointsAtThisMachine reports whether pageURL names a loopback or localhost
+// host, which readers on other machines cannot open.
+func pointsAtThisMachine(pageURL string) bool {
+	parsed, err := url.Parse(pageURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	address := net.ParseIP(host)
+	return address != nil && address.IsLoopback()
 }
 
 // loadUnsubscribeKey reads the key named by TECH_BLOG_UNSUBSCRIBE_KEY_FILE. The

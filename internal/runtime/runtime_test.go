@@ -637,3 +637,19 @@ func TestNewsletterUnsubscriptionsAnswerEveryOutcomeAlike(t *testing.T) {
 		t.Fatal("Unsubscribe() accepted an unknown outcome")
 	}
 }
+
+func TestPointsAtThisMachine(t *testing.T) {
+	for pageURL, want := range map[string]bool{
+		"http://127.0.0.1:8080/":         true,
+		"http://localhost:8080/":         true,
+		"http://app.localhost/":          true,
+		"http://[::1]:8080/":             true,
+		"https://news.superdurable.io/":  false,
+		"http://192.168.1.20:8080/":      false,
+		"https://127.0.0.1.example.com/": false,
+	} {
+		if got := pointsAtThisMachine(pageURL); got != want {
+			t.Errorf("pointsAtThisMachine(%q) = %v, want %v", pageURL, got, want)
+		}
+	}
+}

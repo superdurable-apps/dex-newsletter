@@ -131,18 +131,37 @@ type newsletterHighlightView struct {
 // that escapes personalization links nowhere.
 const UnsubscribeURLPlaceholder = "https://unsubscribe.invalid/newsletter"
 
-// PersonalizeNewsletter returns newsletter with every unsubscribe placeholder
-// replaced by unsubscribeURL, HTML-escaped in HTMLBody. unsubscribeURL must be
-// an absolute http(s) URL, or the placeholder is left in place and an error
-// returned.
+// PersonalizeNewsletter returns newsletter with its unsubscribe placeholder
+// replaced by unsubscribeURL, HTML-escaped in HTMLBody. A body rendered before
+// newsletters carried the placeholder gets an Unsubscribe line appended
+// instead, so no email ever goes out without a link. It returns an error, and
+// the newsletter unchanged, when unsubscribeURL is not an absolute http(s)
+// URL or a body holds the placeholder more than once.
 func PersonalizeNewsletter(newsletter model.RenderedNewsletter, unsubscribeURL string) (model.RenderedNewsletter, error) {
 	parsed, err := url.Parse(unsubscribeURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 		return newsletter, fmt.Errorf("unsubscribe URL must be an absolute http(s) URL")
 	}
+	if strings.Count(newsletter.HTMLBody, UnsubscribeURLPlaceholder) > 1 || strings.Count(newsletter.TextBody, UnsubscribeURLPlaceholder) > 1 {
+		return newsletter, fmt.Errorf("the newsletter holds the unsubscribe placeholder more than once")
+	}
+	escapedURL := html.EscapeString(unsubscribeURL)
 	personalized := newsletter
-	personalized.HTMLBody = strings.ReplaceAll(newsletter.HTMLBody, UnsubscribeURLPlaceholder, html.EscapeString(unsubscribeURL))
-	personalized.TextBody = strings.ReplaceAll(newsletter.TextBody, UnsubscribeURLPlaceholder, unsubscribeURL)
+	if strings.Contains(newsletter.HTMLBody, UnsubscribeURLPlaceholder) {
+		personalized.HTMLBody = strings.Replace(newsletter.HTMLBody, UnsubscribeURLPlaceholder, escapedURL, 1)
+	} else {
+		line := `<p style="margin:12px 0;font-size:12px;color:#6b7280;"><a href="` + escapedURL + `" rel="noopener" style="color:#6b7280;text-decoration:underline;">Unsubscribe</a> from these emails.</p>`
+		if end := strings.LastIndex(personalized.HTMLBody, "</body>"); end >= 0 {
+			personalized.HTMLBody = personalized.HTMLBody[:end] + line + "\n" + personalized.HTMLBody[end:]
+		} else {
+			personalized.HTMLBody += line
+		}
+	}
+	if strings.Contains(newsletter.TextBody, UnsubscribeURLPlaceholder) {
+		personalized.TextBody = strings.Replace(newsletter.TextBody, UnsubscribeURLPlaceholder, unsubscribeURL, 1)
+	} else {
+		personalized.TextBody = strings.TrimRight(personalized.TextBody, "\n") + "\n\nUnsubscribe: " + unsubscribeURL + "\n"
+	}
 	return personalized, nil
 }
 
@@ -234,6 +253,11 @@ func RenderNewsletter(draft model.NewsletterDraft, post model.BlogPost, presenta
 	textBody := renderNewsletterText(view)
 	if err := checkByteLimit("newsletter text body", textBody, maxNewsletterTextBytes); err != nil {
 		return model.RenderedNewsletter{}, err
+	}
+	// Only the footer may carry the placeholder: a copy in the content, such
+	// as a code sample quoting it, would become each reader's live link.
+	if strings.Count(htmlBody, UnsubscribeURLPlaceholder) != 1 || strings.Count(textBody, UnsubscribeURLPlaceholder) != 1 {
+		return model.RenderedNewsletter{}, fmt.Errorf("the newsletter content contains the reserved unsubscribe placeholder %s", UnsubscribeURLPlaceholder)
 	}
 	return model.RenderedNewsletter{
 		Subject:  normalizedDraft.Subject,
