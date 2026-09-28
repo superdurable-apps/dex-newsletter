@@ -1,10 +1,10 @@
 package techblog
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
-	"github.com/superdurable-apps/dex-newsletter/internal/techblog/config"
 	"github.com/superdurable/dex-connectors-library/connectors/slack"
 	"github.com/superdurable/dex-connectors-library/sdkgo"
 )
@@ -63,20 +63,35 @@ func TestResolveNewsletterRequestFlowIDIsStablePerMessage(t *testing.T) {
 	}
 }
 
-func TestSubscriberSheetA1Range(t *testing.T) {
-	cases := []struct {
-		sheet config.SubscriberSheetConfiguration
-		want  string
-	}{
-		{config.SubscriberSheetConfiguration{Range: "A:B"}, "A:B"},
-		{config.SubscriberSheetConfiguration{Tab: "Subscribers", Range: "A:B"}, "'Subscribers'!A:B"},
-		{config.SubscriberSheetConfiguration{Tab: "Subscribers", Range: "Other!A:B"}, "Other!A:B"},
-		{config.SubscriberSheetConfiguration{Tab: " My List ", Range: " A1:C "}, "'My List'!A1:C"},
+func TestAddSubscriberKeepsOneCanonicalEntryPerAddress(t *testing.T) {
+	list, result := addSubscriber(nil, " Reader@Example.COM ", 2)
+	if result != (AddNewsletterSubscriberResult{Outcome: SubscriptionAdded, Email: "reader@example.com"}) || !reflect.DeepEqual(list, []string{"reader@example.com"}) {
+		t.Fatalf("first subscription = %q, %+v", list, result)
 	}
-	for _, testCase := range cases {
-		if got := subscriberSheetA1Range(testCase.sheet); got != testCase.want {
-			t.Errorf("range(%+v) = %q, want %q", testCase.sheet, got, testCase.want)
-		}
+	again, result := addSubscriber(list, "reader@example.com", 2)
+	if result != (AddNewsletterSubscriberResult{Outcome: SubscriptionAlreadySubscribed, Email: "reader@example.com"}) || !reflect.DeepEqual(again, list) {
+		t.Fatalf("repeat subscription = %q, %+v", again, result)
+	}
+	invalid, result := addSubscriber(list, "Reader <reader@example.com>", 2)
+	if result != (AddNewsletterSubscriberResult{Outcome: SubscriptionInvalidAddress}) || !reflect.DeepEqual(invalid, list) {
+		t.Fatalf("invalid subscription = %q, %+v", invalid, result)
+	}
+	full, result := addSubscriber([]string{"a@example.com", "b@example.com"}, "c@example.com", 2)
+	if result != (AddNewsletterSubscriberResult{Outcome: SubscriptionListFull}) || len(full) != 2 {
+		t.Fatalf("subscription to a full list = %q, %+v", full, result)
+	}
+	if _, result := addSubscriber([]string{"a@example.com", "b@example.com"}, "B@example.com", 2); result.Outcome != SubscriptionAlreadySubscribed {
+		t.Fatalf("an existing subscriber of a full list = %+v, want already-subscribed", result)
+	}
+}
+
+func TestAddSubscriberNeverModifiesTheCurrentList(t *testing.T) {
+	current := make([]string, 1, 4)
+	current[0] = "a@example.com"
+	updated, _ := addSubscriber(current, "b@example.com", 10)
+	updated[0] = "changed@example.com"
+	if current[0] != "a@example.com" || len(current) != 1 {
+		t.Fatalf("addSubscriber aliased the current list: %q", current)
 	}
 }
 

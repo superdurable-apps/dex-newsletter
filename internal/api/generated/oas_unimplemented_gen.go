@@ -19,3 +19,13 @@ var _ Handler = UnimplementedHandler{}
 func (UnimplementedHandler) GetApplicationInfo(ctx context.Context) (r *ApplicationInfo, _ error) {
 	return r, ht.ErrNotImplemented
 }
+
+// SubscribeToNewsletter implements subscribeToNewsletter operation.
+//
+// Adds one email address to the newsletter subscriber list. Subscribing an address that is already on
+// the list succeeds with the same response, so the response never reveals list membership.
+//
+// POST /api/newsletter/subscriptions
+func (UnimplementedHandler) SubscribeToNewsletter(ctx context.Context, req *NewsletterSubscriptionRequest) (r SubscribeToNewsletterRes, _ error) {
+	return r, ht.ErrNotImplemented
+}

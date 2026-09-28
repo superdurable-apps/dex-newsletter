@@ -13,8 +13,72 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationInfo'
+  /api/newsletter/subscriptions:
+    post:
+      operationId: subscribeToNewsletter
+      description: >-
+        Adds one email address to the newsletter subscriber list. Subscribing an
+        address that is already on the list succeeds with the same response, so
+        the response never reveals list membership.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewsletterSubscriptionRequest'
+      responses:
+        '200':
+          description: The address is on the newsletter subscriber list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NewsletterSubscription'
+        '400':
+          description: The email address is not a single, deliverable address.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: The subscriber list is full.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: The subscriber list is temporarily unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 components:
   schemas:
+    NewsletterSubscriptionRequest:
+      type: object
+      additionalProperties: false
+      required: [email]
+      properties:
+        email:
+          type: string
+          minLength: 1
+          maxLength: 254
+    NewsletterSubscription:
+      type: object
+      additionalProperties: false
+      required: [email]
+      properties:
+        email:
+          type: string
+          description: The subscribed address in its canonical lowercase form.
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error, message]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
     ApplicationInfo:
       type: object
       additionalProperties: false

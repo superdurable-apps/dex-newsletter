@@ -2,13 +2,13 @@
 """Store a Google OAuth access token as a local Dex connection.
 
 Fallback for when Dex Web Connections cannot save a Google grant (for example
-Gmail connector v0.11.0 with Dex CLI v0.13.8, which fails with
-CONNECTOR_OAUTH_SCOPE_INSUFFICIENT). Authorize the connector's scopes with your
+Gmail connector v0.11.1 and earlier with Dex CLI v0.13.8, which fail with
+CONNECTOR_OAUTH_SCOPE_INSUFFICIENT because they request the `email` scope
+alias). Authorize the connector's scopes with your
 own OAuth client in the Google OAuth 2.0 Playground, copy the access token, and
 run:
 
     scripts/local-connections/set-google-connection.py --connector gmail
-    scripts/local-connections/set-google-connection.py --connector google-sheets
 
 The token is read with a hidden prompt, or with --from-clipboard from the macOS
 clipboard (which is then cleared) when there is no terminal, so it never
@@ -54,7 +54,7 @@ def parse_arguments(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--connector", required=True, choices=sorted(local_connections.GOOGLE_CONNECTORS))
     parser.add_argument(
         "--connection-name",
-        help="connection name (default: newsletter-sender for gmail, subscriber-sheets for google-sheets)",
+        help="connection name (default: newsletter-sender)",
     )
     parser.add_argument("--primary-email", help="gmail only: the address of the account you authorized")
     parser.add_argument(

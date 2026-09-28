@@ -28,6 +28,65 @@ func (s *ApplicationInfo) SetDexWebUrl(val OptString) {
 	s.DexWebUrl = val
 }
 
+// Ref: #/components/schemas/Error
+type Error struct {
+	Error   string `json:"error"`
+	Message string `json:"message"`
+}
+
+// GetError returns the value of Error.
+func (s *Error) GetError() string {
+	return s.Error
+}
+
+// GetMessage returns the value of Message.
+func (s *Error) GetMessage() string {
+	return s.Message
+}
+
+// SetError sets the value of Error.
+func (s *Error) SetError(val string) {
+	s.Error = val
+}
+
+// SetMessage sets the value of Message.
+func (s *Error) SetMessage(val string) {
+	s.Message = val
+}
+
+// Ref: #/components/schemas/NewsletterSubscription
+type NewsletterSubscription struct {
+	// The subscribed address in its canonical lowercase form.
+	Email string `json:"email"`
+}
+
+// GetEmail returns the value of Email.
+func (s *NewsletterSubscription) GetEmail() string {
+	return s.Email
+}
+
+// SetEmail sets the value of Email.
+func (s *NewsletterSubscription) SetEmail(val string) {
+	s.Email = val
+}
+
+func (*NewsletterSubscription) subscribeToNewsletterRes() {}
+
+// Ref: #/components/schemas/NewsletterSubscriptionRequest
+type NewsletterSubscriptionRequest struct {
+	Email string `json:"email"`
+}
+
+// GetEmail returns the value of Email.
+func (s *NewsletterSubscriptionRequest) GetEmail() string {
+	return s.Email
+}
+
+// SetEmail sets the value of Email.
+func (s *NewsletterSubscriptionRequest) SetEmail(val string) {
+	s.Email = val
+}
+
 // NewOptString returns new OptString with value set to v.
 func NewOptString(v string) OptString {
 	return OptString{
@@ -73,3 +132,15 @@ func (o OptString) Or(d string) string {
 	}
 	return d
 }
+
+type SubscribeToNewsletterBadRequest Error
+
+func (*SubscribeToNewsletterBadRequest) subscribeToNewsletterRes() {}
+
+type SubscribeToNewsletterConflict Error
+
+func (*SubscribeToNewsletterConflict) subscribeToNewsletterRes() {}
+
+type SubscribeToNewsletterServiceUnavailable Error
+
+func (*SubscribeToNewsletterServiceUnavailable) subscribeToNewsletterRes() {}

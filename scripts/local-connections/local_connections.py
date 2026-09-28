@@ -41,18 +41,11 @@ GOOGLE_CONNECTORS = {
         "connectionName": "newsletter-sender",
         "scopes": [
             "openid",
-            "email",
+            "https://www.googleapis.com/auth/userinfo.email",
             "https://www.googleapis.com/auth/gmail.readonly",
             "https://www.googleapis.com/auth/gmail.send",
         ],
         "requiresPrimaryEmail": True,
-    },
-    "google-sheets": {
-        "modulePath": "github.com/superdurable/dex-connectors-library/connectors/google/spreadsheet",
-        "moduleVersion": "v0.7.0",
-        "connectionName": "subscriber-sheets",
-        "scopes": ["https://www.googleapis.com/auth/drive.file"],
-        "requiresPrimaryEmail": False,
     },
 }
 

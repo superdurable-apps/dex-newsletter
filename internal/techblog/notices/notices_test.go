@@ -134,6 +134,7 @@ func allNoticesFor(text string, post model.BlogPost, runReference RunReference, 
 		"DeliveryReportNoLink": DeliveryReport(post, summary, text, text),
 		"DeliveryHeld":         DeliveryHeldForAttention(post, summary, text, runReference),
 		"RequestFailed":        RequestFailed(text),
+		"DeliveryStopped":      DeliveryStopped(post, summary, text, urlText, urlText),
 		// The Flow appends the coverage line to these two notices.
 		"PartialResearchCoverage":      coverage,
 		"NoNotableChangesWithCoverage": NoNotableChanges(text, text) + "\n" + coverage,
@@ -388,7 +389,7 @@ func TestNoticeText(t *testing.T) {
 		{
 			name: "NoSubscribers",
 			got:  NoSubscribers(post),
-			want: ":mailbox_with_no_mail: The newsletter was not sent because the subscriber list has no deliverable addresses.\n*Title:* Connector triggers land in Dex\nCheck the subscriber sheet, then post a new request to try again.",
+			want: ":mailbox_with_no_mail: The newsletter was not sent because the subscriber list has no deliverable addresses.\n*Title:* Connector triggers land in Dex\nReaders can subscribe on the application's home page. Once someone has subscribed, post a new request to try again.",
 		},
 		{
 			name: "RequestFailed with reason",
@@ -485,14 +486,14 @@ func TestDeliveryReport(t *testing.T) {
 			artifactPath: "artifacts/p.html",
 			want: ":white_check_mark: Newsletter sent to 500 subscribers.\n*Title:* Connector triggers | &lt;v2&gt;\n" +
 				"12 subscribers were not sent because of the recipient limit (`newsletter.maxRecipients`).\n" +
-				"3 subscriber sheet entries were skipped because they are not valid email addresses.\n*Blog artifact:* `artifacts/p.html`",
+				"3 stored subscriber addresses were skipped because they are not valid email addresses.\n*Blog artifact:* `artifacts/p.html`",
 		},
 		{
 			name:    "one subscriber over the limit and one invalid entry",
 			summary: model.DeliverySummary{Recipients: 2, Sent: 2, SkippedOverLimit: 1, InvalidAddresses: 1},
 			want: ":white_check_mark: Newsletter sent to 2 subscribers.\n*Title:* Connector triggers | &lt;v2&gt;\n" +
 				"1 subscriber was not sent because of the recipient limit (`newsletter.maxRecipients`).\n" +
-				"1 subscriber sheet entry was skipped because it is not a valid email address.",
+				"1 stored subscriber address was skipped because it is not a valid email address.",
 		},
 		{
 			name:    "partial delivery keeps its header and adds the recipient limit",
@@ -505,7 +506,7 @@ func TestDeliveryReport(t *testing.T) {
 			name:    "invalid entries only, nothing attempted",
 			summary: model.DeliverySummary{InvalidAddresses: 7},
 			want: ":x: No newsletter emails were sent.\n*Title:* Connector triggers | &lt;v2&gt;\n" +
-				"7 subscriber sheet entries were skipped because they are not valid email addresses.",
+				"7 stored subscriber addresses were skipped because they are not valid email addresses.",
 		},
 		{
 			name:    "negative skipped and invalid counts are omitted",
@@ -535,10 +536,51 @@ func TestDeliveryReport(t *testing.T) {
 	}
 }
 
+func TestDeliveryStopped(t *testing.T) {
+	post := model.BlogPost{Title: "Connector triggers | <v2>"}
+	reason := "Abandoned by an operator."
+	doNotRepost := "Do not post this request again: a new request would email every subscriber again, including those already sent to."
+	tests := []struct {
+		name    string
+		summary model.DeliverySummary
+		want    string
+	}{
+		{
+			name:    "stopped part-way",
+			summary: model.DeliverySummary{Recipients: 10, Sent: 4, Uncertain: 1},
+			want: ":octagonal_sign: *Newsletter delivery stopped* after sending to 4 of 10 subscribers.\n" +
+				"*Title:* Connector triggers | &lt;v2&gt;\n*Details:*\n> " + reason + "\n*Not delivered:* 1 unconfirmed · 5 not attempted\n" +
+				"_Unconfirmed emails may still have been delivered; check before resending._\n" + doNotRepost,
+		},
+		{
+			name:    "stopped after only a rejected send",
+			summary: model.DeliverySummary{Recipients: 2, Rejected: 1},
+			want: ":octagonal_sign: *Newsletter delivery stopped* after sending to 0 of 2 subscribers.\n" +
+				"*Title:* Connector triggers | &lt;v2&gt;\n*Details:*\n> " + reason + "\n*Not delivered:* 1 rejected · 1 not attempted\n" + doNotRepost,
+		},
+		{
+			name:    "stopped before the first send",
+			summary: model.DeliverySummary{Recipients: 3},
+			want: ":octagonal_sign: *Newsletter delivery stopped* before any email was sent.\n" +
+				"*Title:* Connector triggers | &lt;v2&gt;\n*Details:*\n> " + reason + "\n*Not delivered:* 3 not attempted\n" +
+				"Post a new message in this channel to try again.",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := DeliveryStopped(post, test.summary, reason, "", "")
+			if got != test.want {
+				t.Errorf("got\n%s\nwant\n%s", got, test.want)
+			}
+			assertSlackSafe(t, test.name, got)
+		})
+	}
+}
+
 func TestDeliveryHeldForAttention(t *testing.T) {
 	post := model.BlogPost{Title: "Connector triggers | <v2>"}
 	linkedRun := RunReference{FlowID: "techblog/Ev01", DexWebURL: "https://dex.example.com/"}
-	nextStep := "*Next step:* Reauthorize Gmail in Dex Web, then retry the run. Sending resumes with the first subscriber not yet attempted."
+	nextStep := "*Next step:* Fix the cause in the details, then retry the run in Dex Web. Sending resumes with the first subscriber not yet attempted."
 	reason := "Gmail could not send with the newsletter-sender connection (authentication)."
 	tests := []struct {
 		name         string
@@ -552,7 +594,7 @@ func TestDeliveryHeldForAttention(t *testing.T) {
 			summary:      model.DeliverySummary{Recipients: 500, Sent: 120, SkippedOverLimit: 9, InvalidAddresses: 2},
 			reason:       reason,
 			runReference: linkedRun,
-			want: ":warning: *Newsletter sending paused* after sending to 120 of 500 subscribers because the Gmail connection failed.\n" +
+			want: ":warning: *Newsletter sending paused* after sending to 120 of 500 subscribers.\n" +
 				"*Title:* Connector triggers | &lt;v2&gt;\n*Details:*\n> " + reason + "\n*Not delivered so far:* 380 not yet attempted\n" +
 				nextStep + "\n*Run:* <https://dex.example.com/v2/runs/techblog%2FEv01|Open the run in Dex Web>",
 		},
@@ -560,21 +602,21 @@ func TestDeliveryHeldForAttention(t *testing.T) {
 			name:         "paused before the first send",
 			summary:      model.DeliverySummary{Recipients: 1},
 			runReference: RunReference{FlowID: "flow-1"},
-			want: ":warning: *Newsletter sending paused* after sending to 0 of 1 subscriber because the Gmail connection failed.\n" +
+			want: ":warning: *Newsletter sending paused* after sending to 0 of 1 subscriber.\n" +
 				"*Title:* Connector triggers | &lt;v2&gt;\n*Not delivered so far:* 1 not yet attempted\n" + nextStep + "\n*Run:* Flow `flow-1`",
 		},
 		{
 			name:    "paused after rejected and unconfirmed sends",
 			summary: model.DeliverySummary{Recipients: 10, Sent: 5, Rejected: 1, Uncertain: 2, Defect: 1},
 			reason:  " \n ",
-			want: ":warning: *Newsletter sending paused* after sending to 5 of 10 subscribers because the Gmail connection failed.\n" +
+			want: ":warning: *Newsletter sending paused* after sending to 5 of 10 subscribers.\n" +
 				"*Title:* Connector triggers | &lt;v2&gt;\n*Not delivered so far:* 1 rejected · 2 unconfirmed · 1 failed · 1 not yet attempted\n" +
 				"_Unconfirmed emails may still have been delivered; check before resending._\n" + nextStep,
 		},
 		{
 			name:    "no counts recorded",
 			summary: model.DeliverySummary{Recipients: -3, Sent: -1},
-			want:    ":warning: *Newsletter sending paused* because the Gmail connection failed.\n*Title:* Connector triggers | &lt;v2&gt;\n" + nextStep,
+			want:    ":warning: *Newsletter sending paused*.\n*Title:* Connector triggers | &lt;v2&gt;\n" + nextStep,
 		},
 	}
 	for _, test := range tests {

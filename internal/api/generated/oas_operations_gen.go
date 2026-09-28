@@ -6,5 +6,6 @@ package generated
 type OperationName = string
 
 const (
-	GetApplicationInfoOperation OperationName = "GetApplicationInfo"
+	GetApplicationInfoOperation    OperationName = "GetApplicationInfo"
+	SubscribeToNewsletterOperation OperationName = "SubscribeToNewsletter"
 )

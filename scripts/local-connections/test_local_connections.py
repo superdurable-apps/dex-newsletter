@@ -80,17 +80,18 @@ class RecordTest(unittest.TestCase):
         self.assertEqual(record["credentials"], {"access_token": TOKEN, "primary_email": "sender@example.com"})
         self.assertEqual(record["credentialExpiresAt"], "2026-01-02T03:59:05Z")
 
-    def test_sheets_record_takes_no_primary_email(self):
-        record = local_connections.google_connection_record("google-sheets", TOKEN, NOW, connection_name="other")
+    def test_gmail_record_requires_the_primary_email(self):
+        record = local_connections.google_connection_record("gmail", TOKEN, NOW, connection_name="other", primary_email="a@example.com")
         self.assertEqual(record["connectionName"], "other")
-        self.assertEqual(record["credentials"], {"access_token": TOKEN})
         with self.assertRaises(local_connections.ConnectionsFileError):
-            local_connections.google_connection_record("google-sheets", TOKEN, NOW, primary_email="a@example.com")
+            local_connections.google_connection_record("gmail", TOKEN, NOW)
+        with self.assertRaises(local_connections.ConnectionsFileError):
+            local_connections.google_connection_record("google-sheets", TOKEN, NOW)
 
     def test_invalid_input_is_rejected_without_echoing_the_token(self):
         for token in ["", "not-a-google-token", "ya29.with space"]:
             with self.assertRaises(local_connections.ConnectionsFileError) as raised:
-                local_connections.google_connection_record("google-sheets", token, NOW)
+                local_connections.google_connection_record("gmail", token, NOW, primary_email="sender@example.com")
             if token:
                 self.assertNotIn(token, str(raised.exception))
         for address in ["", "no-at-sign", "a@localhost", "a@b@example.com", "a b@example.com"]:
@@ -122,9 +123,11 @@ class DocumentTest(unittest.TestCase):
     def test_with_connection_appends_a_new_connection_and_drops_duplicates(self):
         document = sample_document()
         document["connections"].append(json.loads(json.dumps(document["connections"][1])))
-        sheets = local_connections.google_connection_record("google-sheets", TOKEN, NOW)
-        appended = local_connections.with_connection(document, sheets)
-        self.assertEqual(appended["connections"][-1], sheets)
+        second_sender = local_connections.google_connection_record(
+            "gmail", TOKEN, NOW, connection_name="second-sender", primary_email="second@example.com"
+        )
+        appended = local_connections.with_connection(document, second_sender)
+        self.assertEqual(appended["connections"][-1], second_sender)
         gmail = local_connections.google_connection_record("gmail", TOKEN, NOW, primary_email="new@example.com")
         deduplicated = local_connections.with_connection(document, gmail)
         names = [(c["connectorId"], c["connectionName"]) for c in deduplicated["connections"]]
@@ -168,7 +171,8 @@ class WriteTest(unittest.TestCase):
             with open(path, encoding="utf-8") as handle:
                 before = handle.read()
             updated = local_connections.with_connection(
-                sample_document(), local_connections.google_connection_record("google-sheets", TOKEN, NOW)
+                sample_document(),
+                local_connections.google_connection_record("gmail", TOKEN, NOW, primary_email="sender@example.com"),
             )
             backup = local_connections.write_document(path, updated, NOW)
             self.assertEqual(backup, path + ".bak-20260102030405")
@@ -239,20 +243,11 @@ class ScriptTest(unittest.TestCase):
             output = io.StringIO()
             with mock.patch("getpass.getpass", return_value="not-a-token"), \
                     contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
-                status = script.main(["--connector", "google-sheets", "--connections-file", path])
+                status = script.main(["--connector", "gmail", "--primary-email", "sender@example.com", "--connections-file", path])
             self.assertEqual(status, 1)
             with open(path, encoding="utf-8") as handle:
                 self.assertEqual(handle.read(), before)
             self.assertEqual(sorted(os.listdir(directory)), ["connections.json"], "no backup for a failed run")
-
-    def test_subscriber_sheet_body_has_the_expected_layout(self):
-        script = load_script("create-subscriber-sheet.py")
-        body = script.spreadsheet_body("Title", "Subscribers", ["a@example.com"])
-        self.assertEqual(body["properties"], {"title": "Title"})
-        sheet = body["sheets"][0]
-        self.assertEqual(sheet["properties"], {"title": "Subscribers"})
-        rows = [[cell["userEnteredValue"]["stringValue"] for cell in row["values"]] for row in sheet["data"][0]["rowData"]]
-        self.assertEqual(rows, [["email", "status"], ["a@example.com", "active"]])
 
 
 if __name__ == "__main__":

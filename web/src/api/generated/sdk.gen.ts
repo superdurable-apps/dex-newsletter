@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { GetApplicationInfoData, GetApplicationInfoResponses } from './types.gen';
+import type { GetApplicationInfoData, GetApplicationInfoResponses, SubscribeToNewsletterData, SubscribeToNewsletterErrors, SubscribeToNewsletterResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -19,3 +19,15 @@ export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends 
 };
 
 export const getApplicationInfo = <ThrowOnError extends boolean = false>(options?: Options<GetApplicationInfoData, ThrowOnError>): RequestResult<GetApplicationInfoResponses, unknown, ThrowOnError> => (options?.client ?? client).get<GetApplicationInfoResponses, unknown, ThrowOnError>({ url: '/api/application-info', ...options });
+
+/**
+ * Adds one email address to the newsletter subscriber list. Subscribing an address that is already on the list succeeds with the same response, so the response never reveals list membership.
+ */
+export const subscribeToNewsletter = <ThrowOnError extends boolean = false>(options: Options<SubscribeToNewsletterData, ThrowOnError>): RequestResult<SubscribeToNewsletterResponses, SubscribeToNewsletterErrors, ThrowOnError> => (options.client ?? client).post<SubscribeToNewsletterResponses, SubscribeToNewsletterErrors, ThrowOnError>({
+    url: '/api/newsletter/subscriptions',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});

@@ -9,7 +9,6 @@ require (
 	github.com/superdurable/dex-connectors-library/connectors/github v0.7.0
 	github.com/superdurable/dex-connectors-library/connectors/google/gemini v0.1.0
 	github.com/superdurable/dex-connectors-library/connectors/google/gmail v0.11.0
-	github.com/superdurable/dex-connectors-library/connectors/google/spreadsheet v0.7.0
 	github.com/superdurable/dex-connectors-library/connectors/slack v0.10.0
 	github.com/superdurable/dex-connectors-library/sdkgo v0.9.0
 	github.com/superdurable/dex/blob-cache-go v0.1.0

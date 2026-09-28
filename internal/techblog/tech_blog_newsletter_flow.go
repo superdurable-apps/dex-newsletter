@@ -1,6 +1,7 @@
 package techblog
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -15,7 +16,6 @@ import (
 	"github.com/superdurable-apps/dex-newsletter/internal/techblog/subscribers"
 	"github.com/superdurable-apps/dex-newsletter/internal/techblog/timewindow"
 	"github.com/superdurable/dex-connectors-library/connectors/google/gmail"
-	"github.com/superdurable/dex-connectors-library/connectors/google/spreadsheet"
 	"github.com/superdurable/dex-connectors-library/connectors/slack"
 	"github.com/superdurable/dex-connectors-library/sdkgo"
 	"github.com/superdurable/dex/sdk-go/dex"
@@ -27,7 +27,6 @@ const TechBlogNewsletterFlowType = "TechBlogNewsletterFlow"
 // Static Dex Web connection and Trigger binding names.
 const (
 	SlackConnectionName             = "slack-workspace"
-	GoogleSheetsConnectionName      = "subscriber-sheets"
 	GmailConnectionName             = "newsletter-sender"
 	NewsletterRequestTriggerBinding = "tech-blog-newsletter-request"
 )
@@ -49,12 +48,12 @@ const (
 	loadNewsletterSubscribersStepType  = "LoadNewsletterSubscribers"
 	sendNewsletterToSubscriberStepType = "SendNewsletterToSubscriber"
 
-	attentionExpiry        = 7 * 24 * time.Hour
-	maximumSubjectRunes    = 150
-	maximumFeedbackRunes   = 4000
-	maximumReasonRunes     = 500
-	maximumPreviewRunes    = 60000
-	deliveryOutcomeKeyForm = "recipient-%05d"
+	attentionExpiry           = 7 * 24 * time.Hour
+	maximumSubjectRunes       = 150
+	maximumFeedbackRunes      = 4000
+	maximumReasonRunes        = 500
+	maximumPreviewRunes       = 60000
+	subscriberListReadTimeout = 30 * time.Second
 )
 
 // Request status values. Action eligibility is keyed on these values.
@@ -77,6 +76,7 @@ const (
 	StatusAbandonRequested     = "abandon-requested"
 	StatusDelivered            = "delivered"
 	StatusDeliveryFailed       = "delivery-failed"
+	StatusDeliveryStopped      = "delivery-stopped"
 	StatusNeedsClarification   = "needs-clarification"
 	StatusNoNotableChanges     = "no-notable-changes"
 	StatusNoSubscribers        = "no-subscribers"
@@ -146,7 +146,7 @@ var (
 	subscriberCount           = dex.DefineAttribute[int64]("subscriber-count")
 	deliveryCursor            = dex.DefineAttribute[int64]("delivery-cursor")
 	deliverySummary           = dex.DefineAttribute[model.DeliverySummary]("delivery-summary")
-	deliveryOutcomes          = dex.DefineAttributeMap[DeliveryOutcome]("delivery-outcomes")
+	deliveryExceptions        = dex.DefineAttribute[[]model.DeliveryException]("delivery-exceptions")
 	failedStage               = dex.DefineAttribute[string]("failed-stage")
 	attentionReason           = dex.DefineAttribute[string]("attention-reason")
 	attentionGateKey          = dex.DefineAttribute[string]("attention-gate-key")
@@ -217,12 +217,6 @@ type StageEntry struct {
 	Stage string `json:"stage"`
 }
 
-// SubscriberSheetRequest is the input of the subscriber-sheet Connector Step.
-type SubscriberSheetRequest struct {
-	SpreadsheetID string `json:"spreadsheetId"`
-	Range         string `json:"range"`
-}
-
 // NewsletterDelivery is the input of the per-subscriber Gmail Connector Step.
 type NewsletterDelivery struct {
 	RecipientIndex int    `json:"recipientIndex"`
@@ -230,13 +224,6 @@ type NewsletterDelivery struct {
 	Subject        string `json:"subject"`
 	HTMLBody       string `json:"htmlBody"`
 	TextBody       string `json:"textBody"`
-}
-
-// DeliveryOutcome is the recorded Gmail outcome for one subscriber.
-type DeliveryOutcome struct {
-	Status            model.DeliveryStatus `json:"status"`
-	ProviderMessageID string               `json:"providerMessageId,omitempty"`
-	FailureKind       string               `json:"failureKind,omitempty"`
 }
 
 // NewsletterResult is the typed completion output of TechBlogNewsletterFlow.
@@ -280,14 +267,23 @@ type AbandonNewsletterRequestInput struct {
 	GateKey string  `json:"gateKey"`
 }
 
+// SubscriberListReader reads the newsletter subscriber list from the Flow that
+// owns it.
+type SubscriberListReader interface {
+	ListNewsletterSubscribers(ctx context.Context) ([]string, error)
+}
+
 // TechBlogNewsletterFlowDependencies are the constructor-injected
 // collaborators of TechBlogNewsletterFlow.
 type TechBlogNewsletterFlowDependencies struct {
-	Configuration           config.ProcessConfiguration
-	SlackConnection         slack.Connection
-	GoogleSheetsConnection  spreadsheet.Connection
-	GmailConnection         gmail.Connection
-	SubscriberSheet         config.SubscriberSheetConfiguration
+	Configuration   config.ProcessConfiguration
+	SlackConnection slack.Connection
+	GmailConnection gmail.Connection
+	SubscriberList  SubscriberListReader
+	// SubscriberListReadRetry overrides how long a failed subscriber list read
+	// is retried before the request holds for attention; nil retries for
+	// about ten minutes.
+	SubscriberListReadRetry *dex.RetryPolicy
 	BlogArtifactStore       BlogArtifactStore
 	LanguageModelGeneration *LanguageModelGenerationFlow
 	RepositoryResearch      *RepositoryChangeResearchFlow
@@ -303,21 +299,13 @@ type TechBlogNewsletterFlow struct {
 
 // NewTechBlogNewsletterFlow validates and wires the Flow.
 func NewTechBlogNewsletterFlow(dependencies TechBlogNewsletterFlowDependencies) *TechBlogNewsletterFlow {
-	if dependencies.BlogArtifactStore == nil || dependencies.LanguageModelGeneration == nil || dependencies.RepositoryResearch == nil {
-		panic("tech blog newsletter Flow requires an artifact store and both child Flows")
+	if dependencies.BlogArtifactStore == nil || dependencies.LanguageModelGeneration == nil || dependencies.RepositoryResearch == nil ||
+		dependencies.SubscriberList == nil {
+		panic("tech blog newsletter Flow requires an artifact store, a subscriber list reader, and both child Flows")
 	}
 	return &TechBlogNewsletterFlow{
 		dependencies: dependencies,
-		stages:       &newsletterStages{configuration: dependencies.Configuration, subscriberSheet: dependencies.SubscriberSheet},
-	}
-}
-
-// SubscriberSheetConfigurationRef identifies the Dex Web operation
-// configuration of the subscriber-sheet Connector Step.
-func SubscriberSheetConfigurationRef() sdkgo.ConnectorConfigurationRef {
-	return sdkgo.ConnectorConfigurationRef{
-		ConnectorID: spreadsheet.ConnectorID, ConnectionName: GoogleSheetsConnectionName, OperationID: "getValues",
-		FlowType: TechBlogNewsletterFlowType, StepType: loadNewsletterSubscribersStepType,
+		stages:       &newsletterStages{configuration: dependencies.Configuration},
 	}
 }
 
@@ -390,31 +378,7 @@ func (flow *TechBlogNewsletterFlow) GetSteps() []dex.StepDef {
 		})),
 		dex.DefineStep(AwaitEditorialDecision{}),
 		dex.DefineStep(WaitForEditorialDecision{stages: stages}),
-		dex.DefineStep(spreadsheet.NewGetValuesStep(spreadsheet.GetValuesStepConfig[SubscriberSheetRequest]{
-			StepType:       loadNewsletterSubscribersStepType,
-			ConnectionName: GoogleSheetsConnectionName,
-			Annotations: sdkgo.StepAnnotations{
-				GroupID: "delivery", GroupLabel: "Delivery",
-				Explanation: "Read newsletter subscriber email addresses from Google Sheets.",
-			},
-			ConfigurationUI: sdkgo.ConnectorConfigurationUI{Units: []sdkgo.ConnectorUIUnit{
-				{ID: "subscriberSpreadsheet", UnitID: spreadsheet.UIUnitSpreadsheetPicker, Label: "Subscriber spreadsheet", Required: true, Bindings: []sdkgo.ConnectorUIBinding{{Port: spreadsheet.UISpreadsheetPickerPortSpreadsheetID, JSONPointer: "/spreadsheetId"}}},
-				{ID: "subscriberTab", UnitID: spreadsheet.UIUnitSheetTabPicker, Label: "Subscriber tab", Bindings: []sdkgo.ConnectorUIBinding{{Port: spreadsheet.UISheetTabPickerPortSpreadsheetID, JSONPointer: "/spreadsheetId"}, {Port: spreadsheet.UISheetTabPickerPortTab, JSONPointer: "/tab"}}},
-				{ID: "subscriberRange", UnitID: spreadsheet.UIUnitTextInput, Label: "Subscriber columns (A1 range, for example A:B)", Required: true, Bindings: []sdkgo.ConnectorUIBinding{{Port: spreadsheet.UITextInputPortText, JSONPointer: "/range"}}},
-			}},
-			Connection:          dependencies.GoogleSheetsConnection,
-			MapToOperationInput: mapSubscriberSheetRequestToOperationInput,
-			StepOptionsOverride: &dex.StepOptions{
-				ExecuteFailure: dex.ProceedToOnExecuteFailure(HoldSubscriberSheetAfterRetries{stages: stages}, nil),
-			},
-			Read:             sdkgo.GoTo(PrepareNewsletterDelivery{stages: stages}),
-			NotFound:         sdkgo.GoTo(RecordSubscriberSheetFailure{stages: stages}),
-			ProviderRejected: sdkgo.GoTo(RecordSubscriberSheetFailure{stages: stages}),
-			InvalidResponse:  sdkgo.GoTo(RecordSubscriberSheetFailure{stages: stages}),
-			Defect:           sdkgo.GoTo(RecordSubscriberSheetFailure{stages: stages}),
-		})),
-		dex.DefineStep(PrepareNewsletterDelivery{stages: stages}),
-		dex.DefineStep(RecordSubscriberSheetFailure{stages: stages}),
+		dex.DefineStep(LoadNewsletterSubscribers{stages: stages, subscriberList: dependencies.SubscriberList, retry: dependencies.SubscriberListReadRetry}),
 		dex.DefineStep(gmail.NewSendMessageStep(gmail.SendMessageStepConfig[NewsletterDelivery]{
 			StepType:       sendNewsletterToSubscriberStepType,
 			ConnectionName: GmailConnectionName,
@@ -423,8 +387,13 @@ func (flow *TechBlogNewsletterFlow) GetSteps() []dex.StepDef {
 			},
 			Connection:          dependencies.GmailConnection,
 			MapToOperationInput: mapNewsletterDeliveryToOperationInput,
+			// Gmail has no server-side idempotency, so a send must not replay.
+			// The connector's ASYNC default lets a send slower than the local
+			// phase run Execute again; SYNC persists before the handler
+			// returns, so only a Worker lost mid-call can repeat a send.
 			StepOptionsOverride: &dex.StepOptions{
-				ExecuteFailure: dex.ProceedToOnExecuteFailure(HoldNewsletterDeliveryAfterRetries{stages: stages}, nil),
+				ExecuteDurability: dex.StepDurabilitySync,
+				ExecuteFailure:    dex.ProceedToOnExecuteFailure(HoldNewsletterDeliveryAfterRetries{stages: stages}, nil),
 			},
 			Sent:             sdkgo.GoTo(RecordNewsletterDelivery{stages: stages}),
 			ProviderRejected: sdkgo.GoTo(RecordNewsletterDelivery{stages: stages}),
@@ -468,7 +437,7 @@ func (flow *TechBlogNewsletterFlow) GetSteps() []dex.StepDef {
 		})),
 		dex.DefineStep(CompleteNewsletterRequest{}),
 		dex.DefineStep(ContinueAfterSlackReplyFailure{stages: stages}),
-		dex.DefineStep(HoldSubscriberSheetAfterRetries{stages: stages}),
+		dex.DefineStep(HoldSubscriberListAfterRetries{stages: stages}),
 		dex.DefineStep(HoldNewsletterDeliveryAfterRetries{stages: stages}),
 	}
 }
@@ -529,7 +498,7 @@ func (*TechBlogNewsletterFlow) GetPersistenceSchema() dex.PersistenceSchema {
 			changeWindowDescription, repositoryDigests, researchBrief, blogPost, blogPostTitle, blogHTML,
 			blogArtifactPath, publishedBlogURL, newsletterDraft, renderedNewsletter, newsletterSubject,
 			deliveryNewsletter, blogRevisionCount, editorFeedback, reviewGateKey, reviewReminderCount,
-			subscriberList, subscriberCount, deliveryCursor, deliverySummary, deliveryOutcomes, failedStage,
+			subscriberList, subscriberCount, deliveryCursor, deliverySummary, deliveryExceptions, failedStage,
 			attentionReason, attentionGateKey, attentionCount, closingReason, approvedNewsletterSubject,
 			newsletterTextPreview, newsletterArtifactPath,
 		},
@@ -590,6 +559,7 @@ func (*TechBlogNewsletterFlow) GetDexSummary(ctx dex.Context, _ dex.None) (*dex.
 // dex:field attribute-key:failed-stage value-type:string editable:false description:"Failed stage"
 // dex:field attribute-key:subscriber-count value-type:int64 editable:false description:"Subscribers"
 // dex:field attribute-key:delivery-summary value-type:json editable:false description:"Delivery outcomes"
+// dex:field attribute-key:delivery-exceptions value-type:array editable:false description:"Recipients to check before resending"
 // dex:field attribute-key:research-brief value-type:json editable:false description:"Research brief"
 // dex:field attribute-key:repository-digests value-type:array editable:false description:"Repository research"
 // dex:field attribute-key:closing-reason value-type:string editable:false description:"Closing reason"
@@ -613,6 +583,7 @@ func (*TechBlogNewsletterFlow) GetDexDisplay(ctx dex.Context, _ dex.None) (*dex.
 	stage, stageErr := optionalValue(failedStage.Get(ctx))
 	subscribersFound, subscribersErr := optionalValue(subscriberCount.Get(ctx))
 	summary, summaryErr := optionalValue(deliverySummary.Get(ctx))
+	exceptions, exceptionsErr := optionalValue(deliveryExceptions.Get(ctx))
 	brief, briefErr := optionalValue(researchBrief.Get(ctx))
 	digests, digestsErr := optionalValue(repositoryDigests.Get(ctx))
 	closing, closingErr := optionalValue(closingReason.Get(ctx))
@@ -621,7 +592,7 @@ func (*TechBlogNewsletterFlow) GetDexDisplay(ctx dex.Context, _ dex.None) (*dex.
 	newsletterPreview, newsletterPreviewErr := optionalValue(newsletterTextPreview.Get(ctx))
 	if err := errors.Join(approvedSubjectErr, newsletterPathErr, newsletterPreviewErr, titleErr, topicErr, statusErr, reasonErr, windowErr, requesterErr, artifactErr, publishedErr,
 		subjectErr, revisionsErr, feedbackErr, reviewGateErr, attentionGateErr, stageErr, subscribersErr, summaryErr,
-		briefErr, digestsErr, closingErr); err != nil {
+		exceptionsErr, briefErr, digestsErr, closingErr); err != nil {
 		return nil, err
 	}
 	return &dex.RPCResult[map[string]any]{Output: map[string]any{
@@ -641,6 +612,7 @@ func (*TechBlogNewsletterFlow) GetDexDisplay(ctx dex.Context, _ dex.None) (*dex.
 		"failed-stage":                stage,
 		"subscriber-count":            subscribersFound,
 		"delivery-summary":            summary,
+		"delivery-exceptions":         exceptions,
 		"research-brief":              brief,
 		"repository-digests":          digests,
 		"closing-reason":              closing,
@@ -1233,18 +1205,11 @@ func (step DraftNewsletter) Execute(ctx dex.Context, _ model.GenerationRequest) 
 		return nil, err
 	}
 	if !configuration.Review.Required {
-		request, configured, err := step.stages.prepareSubscriberSheet(ctx)
+		entry, err := step.stages.prepareSubscriberLoad(ctx)
 		if err != nil {
 			return nil, err
 		}
-		if !configured {
-			reply, err := step.stages.recordAttention(ctx, StageLoadSubscribers, subscriberSheetNotConfigured)
-			if err != nil {
-				return nil, err
-			}
-			return dex.GoTo(sdkgo.StepRef[SlackThreadReply](postAttentionNoticeStepType), reply), nil
-		}
-		return dex.GoTo(sdkgo.StepRef[SubscriberSheetRequest](loadNewsletterSubscribersStepType), request), nil
+		return dex.GoTo(LoadNewsletterSubscribers{}, entry), nil
 	}
 	reply, err := step.stages.recordEditorialReviewOpened(ctx)
 	if err != nil {
@@ -1311,18 +1276,11 @@ func (step WaitForEditorialDecision) Execute(ctx dex.Context, wait EditorialRevi
 		decision := decisions[0]
 		switch decision.Kind {
 		case EditorialDecisionApprove:
-			request, configured, err := step.stages.prepareSubscriberSheet(ctx)
+			entry, err := step.stages.prepareSubscriberLoad(ctx)
 			if err != nil {
 				return nil, err
 			}
-			if !configured {
-				reply, err := step.stages.recordAttention(ctx, StageLoadSubscribers, subscriberSheetNotConfigured)
-				if err != nil {
-					return nil, err
-				}
-				return dex.GoTo(sdkgo.StepRef[SlackThreadReply](postAttentionNoticeStepType), reply), nil
-			}
-			return dex.GoTo(sdkgo.StepRef[SubscriberSheetRequest](loadNewsletterSubscribersStepType), request), nil
+			return dex.GoTo(LoadNewsletterSubscribers{}, entry), nil
 		case EditorialDecisionRevise:
 			revisions, err := optionalValue(blogRevisionCount.Get(ctx))
 			if err != nil {
@@ -1392,19 +1350,42 @@ func (step WaitForEditorialDecision) Execute(ctx dex.Context, wait EditorialRevi
 }
 
 // dex:group group-id:delivery group-label:"Delivery"
-// dex:explanation text:"Validate the subscriber list and send the newsletter to the first subscriber."
-type PrepareNewsletterDelivery struct {
-	dex.StepDefaultsNoWaitFor[spreadsheet.GetValuesResult]
-	stages *newsletterStages
+// dex:explanation text:"Read the subscriber list from Dex, snapshot this issue's audience, and send to the first subscriber."
+type LoadNewsletterSubscribers struct {
+	dex.StepDefaultsNoWaitFor[StageEntry]
+	stages         *newsletterStages
+	subscriberList SubscriberListReader
+	retry          *dex.RetryPolicy
 }
 
 // GetStepType returns the stable unqualified Step type that Dex Web uses.
-func (PrepareNewsletterDelivery) GetStepType() string { return "PrepareNewsletterDelivery" }
+func (LoadNewsletterSubscribers) GetStepType() string { return loadNewsletterSubscribersStepType }
 
-// Execute snapshots the audience and the approved newsletter.
-func (step PrepareNewsletterDelivery) Execute(ctx dex.Context, result spreadsheet.GetValuesResult) (*dex.StepDecision, error) {
+// GetStepOptions retries a failed read of the subscriber list Flow, for about
+// ten minutes by default, then holds the request for operator attention.
+func (step LoadNewsletterSubscribers) GetStepOptions() *dex.StepOptions {
+	retry := step.retry
+	if retry == nil {
+		retry = &dex.RetryPolicy{InitialInterval: 2 * time.Second, BackoffCoefficient: 2, MaximumInterval: time.Minute, TotalDuration: 10 * time.Minute}
+	}
+	return &dex.StepOptions{
+		ExecuteRetry:   retry,
+		ExecuteFailure: dex.ProceedToOnExecuteFailure(HoldSubscriberListAfterRetries{stages: step.stages}, nil),
+	}
+}
+
+// Execute snapshots the audience and the approved newsletter. The read is an
+// external effect through the Dex Client, so it lives here; a failed read is
+// retried and the snapshot is taken once.
+func (step LoadNewsletterSubscribers) Execute(ctx dex.Context, _ StageEntry) (*dex.StepDecision, error) {
 	configuration := step.stages.configuration
-	list, err := subscribers.BuildSubscriberList(result.Value.Values, subscribers.SheetLayoutFromConfiguration(configuration.Newsletter))
+	readContext, cancel := context.WithTimeout(ctx, subscriberListReadTimeout)
+	defer cancel()
+	addresses, err := step.subscriberList.ListNewsletterSubscribers(readContext)
+	if err != nil {
+		return nil, fmt.Errorf("read the newsletter subscriber list: %w", err)
+	}
+	list, err := subscribers.BuildDeliveryList(addresses, configuration.Newsletter.MaxRecipients)
 	if err != nil {
 		reply, recordErr := step.stages.recordAttention(ctx, StageLoadSubscribers, err.Error())
 		if recordErr != nil {
@@ -1423,7 +1404,7 @@ func (step PrepareNewsletterDelivery) Execute(ctx dex.Context, result spreadshee
 		if err != nil {
 			return nil, err
 		}
-		reply, err := step.stages.recordClosing(ctx, StatusNoSubscribers, "The subscriber sheet has no subscribed recipients.", notices.NoSubscribers(post))
+		reply, err := step.stages.recordClosing(ctx, StatusNoSubscribers, "The newsletter subscriber list is empty.", notices.NoSubscribers(post))
 		if err != nil {
 			return nil, err
 		}
@@ -1446,6 +1427,9 @@ func (step PrepareNewsletterDelivery) Execute(ctx dex.Context, result spreadshee
 	if err := deliveryCursor.Set(ctx, 0); err != nil {
 		return nil, err
 	}
+	if err := deliveryExceptions.Set(ctx, []model.DeliveryException{}); err != nil {
+		return nil, err
+	}
 	if err := deliverySummary.Set(ctx, model.DeliverySummary{
 		Recipients: len(list.Recipients), SkippedOverLimit: list.TruncatedCount, InvalidAddresses: list.InvalidAddresses,
 	}); err != nil {
@@ -1455,26 +1439,6 @@ func (step PrepareNewsletterDelivery) Execute(ctx dex.Context, result spreadshee
 		return nil, err
 	}
 	return dex.GoTo(sdkgo.StepRef[NewsletterDelivery](sendNewsletterToSubscriberStepType), deliveryFor(newsletter, list, 0)), nil
-}
-
-// dex:group group-id:delivery group-label:"Delivery"
-// dex:explanation text:"Hold for operator attention when the subscriber sheet cannot be read."
-type RecordSubscriberSheetFailure struct {
-	dex.StepDefaultsNoWaitFor[spreadsheet.GetValuesResult]
-	stages *newsletterStages
-}
-
-// GetStepType returns the stable unqualified Step type that Dex Web uses.
-func (RecordSubscriberSheetFailure) GetStepType() string { return "RecordSubscriberSheetFailure" }
-
-// Execute routes to operator recovery.
-func (step RecordSubscriberSheetFailure) Execute(ctx dex.Context, result spreadsheet.GetValuesResult) (*dex.StepDecision, error) {
-	reply, err := step.stages.recordAttention(ctx, StageLoadSubscribers,
-		"The subscriber sheet could not be read ("+describeQueryFailure(string(result.Branch), result.Failure)+").")
-	if err != nil {
-		return nil, err
-	}
-	return dex.GoTo(sdkgo.StepRef[SlackThreadReply](postAttentionNoticeStepType), reply), nil
 }
 
 // dex:group group-id:delivery group-label:"Delivery"
@@ -1507,36 +1471,48 @@ func (step RecordNewsletterDelivery) Execute(ctx dex.Context, result gmail.SendM
 		}
 		return dex.GoTo(sdkgo.StepRef[SlackThreadReply](postAttentionNoticeStepType), reply), nil
 	}
-	outcome := DeliveryOutcome{ProviderMessageID: result.Value.MessageID}
-	if result.Failure != nil {
-		outcome.FailureKind = string(result.Failure.Kind)
+	list, err := subscriberList.Get(ctx)
+	if err != nil {
+		return nil, err
 	}
+	if cursor < 0 || int(cursor) >= len(list.Recipients) {
+		return nil, fmt.Errorf("delivery cursor %d is outside %d subscribers", cursor, len(list.Recipients))
+	}
+	var status model.DeliveryStatus
 	switch result.Branch {
 	case gmail.SendMessageBranchSent:
-		outcome.Status = model.DeliverySent
+		status = model.DeliverySent
 		summary.Sent++
 	case gmail.SendMessageBranchProviderRejected:
-		outcome.Status = model.DeliveryRejected
+		status = model.DeliveryRejected
 		summary.Rejected++
 	case gmail.SendMessageBranchUncertain:
-		outcome.Status = model.DeliveryUncertain
+		status = model.DeliveryUncertain
 		summary.Uncertain++
 	default:
-		outcome.Status = model.DeliveryDefect
+		status = model.DeliveryDefect
 		summary.Defect++
 	}
-	if err := deliveryOutcomes.Set(ctx, fmt.Sprintf(deliveryOutcomeKeyForm, cursor), outcome); err != nil {
-		return nil, err
+	if status != model.DeliverySent {
+		// Operators check these recipients in Dex Web before any resend;
+		// addresses never go to Slack.
+		exceptions, err := optionalValue(deliveryExceptions.Get(ctx))
+		if err != nil {
+			return nil, err
+		}
+		exception := model.DeliveryException{Recipient: list.Recipients[cursor], Status: status}
+		if result.Failure != nil {
+			exception.FailureKind = string(result.Failure.Kind)
+		}
+		if err := deliveryExceptions.Set(ctx, append(exceptions, exception)); err != nil {
+			return nil, err
+		}
 	}
 	if err := deliverySummary.Set(ctx, summary); err != nil {
 		return nil, err
 	}
 	next := cursor + 1
 	if err := deliveryCursor.Set(ctx, next); err != nil {
-		return nil, err
-	}
-	list, err := subscriberList.Get(ctx)
-	if err != nil {
 		return nil, err
 	}
 	if int(next) < len(list.Recipients) {
@@ -1620,8 +1596,7 @@ func (step WaitForOperatorRecovery) Execute(ctx dex.Context, wait OperatorRecove
 		return nil, err
 	}
 	if len(decisions) == 1 && decisions[0].Kind == RecoveryDecisionAbandon {
-		reason := firstNonBlank(decisions[0].Reason, "Abandoned by an operator.")
-		reply, err := step.stages.recordClosing(ctx, StatusAbandoned, reason, notices.RequestFailed(reason))
+		reply, err := step.stages.recordAbandonment(ctx, wait.Stage, firstNonBlank(decisions[0].Reason, "Abandoned by an operator."))
 		if err != nil {
 			return nil, err
 		}
@@ -1669,18 +1644,11 @@ func (step WaitForOperatorRecovery) Execute(ctx dex.Context, wait OperatorRecove
 			}
 			return dex.GoTo(DraftNewsletter{}, request), nil
 		case StageLoadSubscribers:
-			request, configured, err := step.stages.prepareSubscriberSheet(ctx)
+			entry, err := step.stages.prepareSubscriberLoad(ctx)
 			if err != nil {
 				return nil, err
 			}
-			if !configured {
-				reply, err := step.stages.recordAttention(ctx, StageLoadSubscribers, subscriberSheetNotConfigured)
-				if err != nil {
-					return nil, err
-				}
-				return dex.GoTo(sdkgo.StepRef[SlackThreadReply](postAttentionNoticeStepType), reply), nil
-			}
-			return dex.GoTo(sdkgo.StepRef[SubscriberSheetRequest](loadNewsletterSubscribersStepType), request), nil
+			return dex.GoTo(LoadNewsletterSubscribers{}, entry), nil
 		case StageSendNewsletter:
 			delivery, err := step.stages.prepareDeliveryResumption(ctx)
 			if err != nil {
@@ -1704,8 +1672,7 @@ func (step WaitForOperatorRecovery) Execute(ctx dex.Context, wait OperatorRecove
 	if status != StatusNeedsAttention {
 		return dex.GoTo(WaitForOperatorRecovery{}, wait), nil
 	}
-	reason := "No operator recovered the request within 7 days."
-	reply, err := step.stages.recordClosing(ctx, StatusAbandoned, reason, notices.RequestFailed(reason))
+	reply, err := step.stages.recordAbandonment(ctx, wait.Stage, "No operator recovered the request within 7 days.")
 	if err != nil {
 		return nil, err
 	}
@@ -1742,19 +1709,19 @@ func (ContinueAfterSlackReplyFailure) Execute(_ dex.Context, reply SlackThreadRe
 }
 
 // dex:group group-id:delivery group-label:"Delivery"
-// dex:explanation text:"Hold for operator attention when reading the subscriber sheet exhausts its retries."
-type HoldSubscriberSheetAfterRetries struct {
-	dex.StepDefaultsNoWaitFor[SubscriberSheetRequest]
+// dex:explanation text:"Hold for operator attention when reading the subscriber list exhausts its retries."
+type HoldSubscriberListAfterRetries struct {
+	dex.StepDefaultsNoWaitFor[StageEntry]
 	stages *newsletterStages
 }
 
 // GetStepType returns the stable unqualified Step type that Dex Web uses.
-func (HoldSubscriberSheetAfterRetries) GetStepType() string { return "HoldSubscriberSheetAfterRetries" }
+func (HoldSubscriberListAfterRetries) GetStepType() string { return "HoldSubscriberListAfterRetries" }
 
 // Execute routes to operator recovery.
-func (step HoldSubscriberSheetAfterRetries) Execute(ctx dex.Context, _ SubscriberSheetRequest) (*dex.StepDecision, error) {
+func (step HoldSubscriberListAfterRetries) Execute(ctx dex.Context, _ StageEntry) (*dex.StepDecision, error) {
 	reply, err := step.stages.recordAttention(ctx, StageLoadSubscribers,
-		"Google Sheets kept failing after every retry ("+recoveryErrorText(ctx)+").")
+		"The newsletter subscriber list could not be read after every retry ("+recoveryErrorText(ctx)+"). Check that the application is running, then retry.")
 	if err != nil {
 		return nil, err
 	}
@@ -1811,14 +1778,11 @@ func (CompleteNewsletterRequest) Execute(ctx dex.Context, _ slack.PostThreadRepl
 	}), nil
 }
 
-const subscriberSheetNotConfigured = "The subscriber sheet is not configured. Configure the LoadNewsletterSubscribers Step in Dex Web Connections, restart the application, then retry."
-
 // newsletterStages prepares stage inputs and records attention, review, and
 // closing state. It never returns Dex decisions: every transition stays in a
 // Step's Execute so the Flow Definition Graph shows it.
 type newsletterStages struct {
-	configuration   config.ProcessConfiguration
-	subscriberSheet config.SubscriberSheetConfiguration
+	configuration config.ProcessConfiguration
 }
 
 func (stages *newsletterStages) prepareRequestInterpretation(ctx dex.Context) (model.GenerationRequest, error) {
@@ -1901,16 +1865,11 @@ func (stages *newsletterStages) prepareNewsletterDraft(ctx dex.Context) (model.G
 	return prompts.BuildNewsletterDraftRequest(stages.configuration, interpretation, post), nil
 }
 
-// prepareSubscriberSheet reports configured=false when no sheet is configured.
-func (stages *newsletterStages) prepareSubscriberSheet(ctx dex.Context) (SubscriberSheetRequest, bool, error) {
-	sheet := stages.subscriberSheet
-	if strings.TrimSpace(sheet.SpreadsheetID) == "" || strings.TrimSpace(sheet.Range) == "" {
-		return SubscriberSheetRequest{}, false, nil
-	}
+func (stages *newsletterStages) prepareSubscriberLoad(ctx dex.Context) (StageEntry, error) {
 	if err := requestStatus.Set(ctx, StatusLoadingSubscribers); err != nil {
-		return SubscriberSheetRequest{}, false, err
+		return StageEntry{}, err
 	}
-	return SubscriberSheetRequest{SpreadsheetID: strings.TrimSpace(sheet.SpreadsheetID), Range: subscriberSheetA1Range(sheet)}, true, nil
+	return StageEntry{Stage: StageLoadSubscribers}, nil
 }
 
 func (stages *newsletterStages) recordAttention(ctx dex.Context, stage string, reason string) (SlackThreadReply, error) {
@@ -1980,6 +1939,32 @@ func (stages *newsletterStages) recordClosing(ctx dex.Context, status string, re
 		return SlackThreadReply{}, err
 	}
 	return SlackThreadReply{Thread: threadOf(request), Text: text, Continuation: ContinueToCompletion}, nil
+}
+
+// recordAbandonment closes a request an operator abandoned or nobody
+// recovered. When delivery had paused, it reports what was sent and warns
+// against reposting, which would email every subscriber again.
+func (stages *newsletterStages) recordAbandonment(ctx dex.Context, stage string, reason string) (SlackThreadReply, error) {
+	if stage != StageSendNewsletter {
+		return stages.recordClosing(ctx, StatusAbandoned, reason, notices.RequestFailed(reason))
+	}
+	post, err := blogPost.Get(ctx)
+	if err != nil {
+		return SlackThreadReply{}, err
+	}
+	summary, err := optionalValue(deliverySummary.Get(ctx))
+	if err != nil {
+		return SlackThreadReply{}, err
+	}
+	publishedURL, err := optionalValue(publishedBlogURL.Get(ctx))
+	if err != nil {
+		return SlackThreadReply{}, err
+	}
+	artifactPath, err := optionalValue(blogArtifactPath.Get(ctx))
+	if err != nil {
+		return SlackThreadReply{}, err
+	}
+	return stages.recordClosing(ctx, StatusDeliveryStopped, reason, notices.DeliveryStopped(post, summary, reason, publishedURL, artifactPath))
 }
 
 func (stages *newsletterStages) runReference(ctx dex.Context) notices.RunReference {
@@ -2128,10 +2113,6 @@ func mapSlackThreadReplyToOperationInput(reply SlackThreadReply) slack.PostThrea
 	return slack.PostThreadReplyInput{ChannelID: reply.Thread.ChannelID, ThreadTimestamp: reply.Thread.ThreadTimestamp, Text: reply.Text}
 }
 
-func mapSubscriberSheetRequestToOperationInput(request SubscriberSheetRequest) spreadsheet.GetValuesInput {
-	return spreadsheet.GetValuesInput{SpreadsheetID: request.SpreadsheetID, Range: request.Range}
-}
-
 func mapNewsletterDeliveryToOperationInput(delivery NewsletterDelivery) gmail.SendMessageInput {
 	return gmail.SendMessageInput{
 		To: []string{delivery.Recipient}, Subject: delivery.Subject, TextBody: delivery.TextBody, HTMLBody: delivery.HTMLBody,
@@ -2154,14 +2135,6 @@ func deliveryFor(newsletter model.RenderedNewsletter, list model.SubscriberList,
 		RecipientIndex: index, Recipient: list.Recipients[index], Subject: newsletter.Subject,
 		HTMLBody: newsletter.HTMLBody, TextBody: newsletter.TextBody,
 	}
-}
-
-func subscriberSheetA1Range(sheet config.SubscriberSheetConfiguration) string {
-	cells := strings.TrimSpace(sheet.Range)
-	if tab := strings.TrimSpace(sheet.Tab); tab != "" && !strings.Contains(cells, "!") {
-		return "'" + tab + "'!" + cells
-	}
-	return cells
 }
 
 func sanitizeSubject(subject string) string {
@@ -2246,8 +2219,8 @@ var _ dex.Step[StageEntry] = PublishBlogArtifact{}
 var _ dex.Step[model.GenerationRequest] = DraftNewsletter{}
 var _ dex.Step[slack.PostThreadReplyResult] = AwaitEditorialDecision{}
 var _ dex.Step[EditorialReviewWait] = WaitForEditorialDecision{}
-var _ dex.Step[spreadsheet.GetValuesResult] = PrepareNewsletterDelivery{}
-var _ dex.Step[spreadsheet.GetValuesResult] = RecordSubscriberSheetFailure{}
+var _ dex.Step[StageEntry] = LoadNewsletterSubscribers{}
+var _ dex.Step[StageEntry] = HoldSubscriberListAfterRetries{}
 var _ dex.Step[gmail.SendMessageResult] = RecordNewsletterDelivery{}
 var _ dex.Step[slack.PostThreadReplyResult] = AwaitOperatorRecovery{}
 var _ dex.Step[OperatorRecoveryWait] = WaitForOperatorRecovery{}

@@ -4,6 +4,22 @@ export type ClientOptions = {
     baseUrl: `${string}://${string}` | (string & {});
 };
 
+export type NewsletterSubscriptionRequest = {
+    email: string;
+};
+
+export type NewsletterSubscription = {
+    /**
+     * The subscribed address in its canonical lowercase form.
+     */
+    email: string;
+};
+
+export type Error = {
+    error: string;
+    message: string;
+};
+
 export type ApplicationInfo = {
     name: string;
     dexWebUrl?: string;
@@ -24,3 +40,36 @@ export type GetApplicationInfoResponses = {
 };
 
 export type GetApplicationInfoResponse = GetApplicationInfoResponses[keyof GetApplicationInfoResponses];
+
+export type SubscribeToNewsletterData = {
+    body: NewsletterSubscriptionRequest;
+    path?: never;
+    query?: never;
+    url: '/api/newsletter/subscriptions';
+};
+
+export type SubscribeToNewsletterErrors = {
+    /**
+     * The email address is not a single, deliverable address.
+     */
+    400: Error;
+    /**
+     * The subscriber list is full.
+     */
+    409: Error;
+    /**
+     * The subscriber list is temporarily unavailable.
+     */
+    503: Error;
+};
+
+export type SubscribeToNewsletterError = SubscribeToNewsletterErrors[keyof SubscribeToNewsletterErrors];
+
+export type SubscribeToNewsletterResponses = {
+    /**
+     * The address is on the newsletter subscriber list.
+     */
+    200: NewsletterSubscription;
+};
+
+export type SubscribeToNewsletterResponse = SubscribeToNewsletterResponses[keyof SubscribeToNewsletterResponses];
