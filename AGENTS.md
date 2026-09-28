@@ -128,8 +128,10 @@ tests at `.dex-dev/` or a real connection store.
 
 `scripts/local-connections/` holds developer-only Python 3 helpers (standard
 library only) that write a Google access token into the local connection store
-(`set-google-connection.py`). Never run them from tests or automation against
-a real store, and never let them print a credential. `make test-unit` also runs
+(`set-google-connection.py`, and `refresh-gmail-delegated-token.py`, which
+mints Gmail tokens through Workspace domain-wide delegation from a service
+account key). Never run them from tests or automation against a real store or
+a real key, and never let them print a credential or key. `make test-unit` also runs
 their offline unittest, which uses temporary files and checks that the Google
 connector module version in `local_connections.py` matches `go.mod`; bump them
 together.

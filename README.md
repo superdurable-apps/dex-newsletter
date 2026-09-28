@@ -443,6 +443,27 @@ configuration need a `make dev-app` restart.
   4. Run `scripts/local-connections/set-google-connection.py --connector gmail`,
      paste the token at the hidden prompt, then enter the sender account's
      email address (or pass `--primary-email`).
+- In a Google Workspace domain, domain-wide delegation removes the hourly
+  reconnect. A service account mints one-hour tokens that send as the sender,
+  and a local helper keeps `newsletter-sender` supplied (development only):
+  1. In Google Cloud, enable the Gmail API, create a service account, and
+     download a JSON key. If the organization policy
+     `iam.managed.disableServiceAccountKeyCreation` blocks keys, an
+     organization policy administrator must allow them for the project.
+  2. In the Workspace Admin console, **Security > Access and data control >
+     API controls > Domain-wide delegation**, add the service account's client
+     ID with the one scope `https://www.googleapis.com/auth/gmail.send`.
+  3. Keep the key outside the repository, mode `0600`, for example in
+     `~/.dex/secrets/`.
+  4. Run `scripts/local-connections/refresh-gmail-delegated-token.py
+     --service-account-key <key> --sender <address>` and leave it running. It
+     writes a token, then replaces it 15 minutes before each expiry; the
+     application reloads credentials before every send, so it needs no
+     restart. The helper stops with the process; start it again after a
+     reboot.
+
+  The key can send mail as the sender until it is deleted in Google Cloud;
+  delete it there when you no longer need it.
 
 ### Quick-test profile
 
@@ -489,6 +510,7 @@ it) and never print a token.
 | Script | Does |
 | --- | --- |
 | `set-google-connection.py --connector gmail` | Stores a Google access token you obtained yourself as `newsletter-sender`. It reads the token at a hidden prompt, or with `--from-clipboard` from the macOS clipboard, which it then clears. For Gmail it also asks for the sender's email address (`--primary-email` skips the prompt and is required with `--from-clipboard`). It backs up the file to a new `connections.json.bak-<timestamp>` that is mode `0600` from creation, replaces only that connection, writes the file atomically with mode `0600`, and sets `credentialExpiresAt` 55 minutes ahead. |
+| `refresh-gmail-delegated-token.py --service-account-key <key> --sender <address>` | Keeps `newsletter-sender` supplied with tokens minted through Workspace domain-wide delegation (see [Gmail](#gmail-newsletter-sender)). It signs a JWT with the service account key through the `openssl` command, exchanges it at Google's token endpoint, and writes the token as `set-google-connection.py` does, with `credentialExpiresAt` five minutes before Google's expiry. It repeats 15 minutes before each expiry, retrying every minute after a failure, until stopped; `--once` writes one token and exits. It refuses a key that other users can read, never prints the key, assertion, or token, and backs up the connections file only on its first write. |
 
 Backups hold the same plaintext credentials; delete them when you are done.
 `make test-unit` runs the helpers' offline tests.
