@@ -1,12 +1,26 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 
 const api = vi.hoisted(() => ({
   getApplicationInfo: vi.fn(),
+  subscribeToNewsletter: vi.fn(),
 }));
 
 vi.mock('./api/generated/sdk.gen', () => api);
+
+const unavailable = 'Subscriptions are unavailable right now. Try again in a minute.';
+
+async function renderReady() {
+  api.getApplicationInfo.mockResolvedValue({ data: { name: 'Dex Tech Blog', dexWebUrl: 'http://127.0.0.1:8802' } });
+  render(<App />);
+  await screen.findByRole('heading', { name: 'Dex Tech Blog' });
+}
+
+function submitEmail(email: string) {
+  fireEvent.change(screen.getByRole('textbox', { name: 'Email' }), { target: { value: email } });
+  fireEvent.click(screen.getByRole('button', { name: 'Subscribe' }));
+}
 
 describe('App', () => {
   beforeEach(() => {
@@ -44,13 +58,85 @@ describe('App', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/application information is unavailable/i);
   });
 
-  it('presents no process-management controls', async () => {
-    api.getApplicationInfo.mockResolvedValue({ data: { name: 'Dex Tech Blog', dexWebUrl: 'http://127.0.0.1:8802' } });
-    render(<App />);
-    await screen.findByRole('heading', { name: 'Dex Tech Blog' });
-    expect(screen.queryAllByRole('button')).toHaveLength(0);
-    expect(screen.queryAllByRole('textbox')).toHaveLength(0);
-    expect(screen.queryByRole('form')).not.toBeInTheDocument();
+  it('presents only the subscription form and no process-management controls', async () => {
+    await renderReady();
+    expect(screen.getByRole('form', { name: 'Newsletter subscription' })).toBeInTheDocument();
+    expect(screen.getAllByRole('textbox')).toHaveLength(1);
+    expect(screen.getAllByRole('button')).toHaveLength(1);
+    const email = screen.getByRole('textbox', { name: 'Email' });
+    expect(email).toHaveAttribute('type', 'email');
+    expect(email).toHaveAttribute('name', 'email');
+    expect(email).toHaveAttribute('autocomplete', 'email');
+    expect(email).toHaveAttribute('maxlength', '254');
+    expect(email).toBeRequired();
+    expect(screen.getByRole('button', { name: 'Subscribe' })).toHaveAttribute('type', 'submit');
     expect(screen.queryByText(/approve|retry|mock controls/i)).not.toBeInTheDocument();
+    expect(api.subscribeToNewsletter).not.toHaveBeenCalled();
+  });
+
+  it('subscribes once and shows the canonical address', async () => {
+    api.subscribeToNewsletter.mockResolvedValue({ data: { email: 'reader@example.com' } });
+    await renderReady();
+    submitEmail('Reader@Example.com');
+    expect(await screen.findByRole('status')).toHaveTextContent('Subscribed as reader@example.com.');
+    expect(api.subscribeToNewsletter).toHaveBeenCalledTimes(1);
+    expect(api.subscribeToNewsletter).toHaveBeenCalledWith({ body: { email: 'Reader@Example.com' } });
+    expect(screen.getByRole('textbox', { name: 'Email' })).toHaveValue('');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('shows the server message for a rejected address', async () => {
+    api.subscribeToNewsletter.mockResolvedValue({
+      error: { error: 'invalid_email', message: 'Enter a single email address, such as name@example.com.' },
+      response: { status: 400 },
+    });
+    await renderReady();
+    submitEmail('reader@example');
+    expect(await screen.findByRole('alert')).toHaveTextContent('Enter a single email address, such as name@example.com.');
+    expect(screen.getByRole('textbox', { name: 'Email' })).toHaveValue('reader@example');
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  it('shows the generic message when the request never reaches the server', async () => {
+    // The generated client resolves a failed fetch as { error: TypeError } with no response.
+    api.subscribeToNewsletter.mockResolvedValue({ error: new TypeError('Failed to fetch') });
+    await renderReady();
+    submitEmail('reader@example.com');
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(unavailable);
+    expect(alert).not.toHaveTextContent(/failed to fetch/i);
+  });
+
+  it('shows the generic message when the client call rejects', async () => {
+    api.subscribeToNewsletter.mockRejectedValue(new TypeError('Failed to fetch'));
+    await renderReady();
+    submitEmail('reader@example.com');
+    expect(await screen.findByRole('alert')).toHaveTextContent(unavailable);
+  });
+
+  it('disables Subscribe while the request is pending and clears the previous message on a new submit', async () => {
+    api.subscribeToNewsletter.mockResolvedValueOnce({
+      error: { error: 'unavailable', message: unavailable },
+      response: { status: 503 },
+    });
+    await renderReady();
+    submitEmail('reader@example.com');
+    expect(await screen.findByRole('alert')).toHaveTextContent(unavailable);
+
+    let finish: (value: unknown) => void = () => {};
+    api.subscribeToNewsletter.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    fireEvent.click(screen.getByRole('button', { name: 'Subscribe' }));
+    expect(screen.getByRole('button', { name: 'Subscribe' })).toBeDisabled();
+    expect(screen.getByRole('form', { name: 'Newsletter subscription' })).toHaveAttribute('aria-busy', 'true');
+    expect(screen.getByRole('textbox', { name: 'Email' })).toHaveValue('reader@example.com');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Subscribe' }));
+    expect(api.subscribeToNewsletter).toHaveBeenCalledTimes(2);
+
+    finish({ data: { email: 'reader@example.com' } });
+    expect(await screen.findByRole('status')).toHaveTextContent('Subscribed as reader@example.com.');
+    expect(screen.getByRole('button', { name: 'Subscribe' })).toBeEnabled();
+    expect(screen.getByRole('form', { name: 'Newsletter subscription' })).toHaveAttribute('aria-busy', 'false');
   });
 });
