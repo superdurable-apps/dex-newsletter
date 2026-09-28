@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -20,7 +19,6 @@ type manifest struct {
 	MinimumSandboxImageContractRevision int               `json:"minimumSandboxImageContractRevision"`
 	OpenAPISpec                         string            `json:"openapiSpec"`
 	AgentInstructions                   string            `json:"agentInstructions"`
-	DexSkill                            string            `json:"dexSkill"`
 	Commands                            map[string]string `json:"commands"`
 }
 
@@ -34,7 +32,7 @@ func TestTemplateContract(t *testing.T) {
 	if err := json.Unmarshal(manifestBytes, &contract); err != nil {
 		t.Fatalf("decode manifest: %v", err)
 	}
-	if contract.SchemaVersion != 1 || contract.BuildProfile != "go-react-v1" || contract.TemplateVersion != "1.4.1" || contract.MinimumSandboxImageContractRevision != 2 {
+	if contract.SchemaVersion != 1 || contract.BuildProfile != "go-react-v1" || contract.TemplateVersion != "1.6.1" || contract.MinimumSandboxImageContractRevision != 3 {
 		t.Fatalf("unexpected template identity: %+v", contract)
 	}
 	if baseline := strings.TrimSpace(readFile(t, filepath.Join(root, "DEX_SERVER_BASELINE"))); baseline != "server/v0.13.2" {
@@ -44,10 +42,10 @@ func TestTemplateContract(t *testing.T) {
 		t.Fatalf("unexpected Dex CLI baseline: %q", baseline)
 	}
 	goModule := readFile(t, filepath.Join(root, "go.mod"))
-	if !regexp.MustCompile(`(?m)^\s*(require\s+)?github\.com/superdurable/dex/sdk-go v0\.12\.1(\s|$)`).MatchString(goModule) {
-		t.Fatal("go.mod must pin Dex Go SDK v0.12.1")
+	if !regexp.MustCompile(`(?m)^\s*(require\s+)?github\.com/superdurable/dex/sdk-go v0\.13\.1(\s|$)`).MatchString(goModule) {
+		t.Fatal("go.mod must pin Dex Go SDK v0.13.1")
 	}
-	for _, path := range []string{contract.OpenAPISpec, contract.AgentInstructions, contract.DexSkill} {
+	for _, path := range []string{contract.OpenAPISpec, contract.AgentInstructions} {
 		if _, err := os.Stat(filepath.Join(root, path)); err != nil {
 			t.Errorf("manifest path %q: %v", path, err)
 		}
@@ -96,23 +94,23 @@ func TestTemplateContract(t *testing.T) {
 	if gitignore := readFile(t, filepath.Join(root, ".gitignore")); !regexp.MustCompile(`(?m)^/?\.dex-dev/$`).MatchString(gitignore) {
 		t.Error(".gitignore must ignore the persistent local Dex state directory .dex-dev/")
 	}
-	gitmodules := readFile(t, filepath.Join(root, ".gitmodules"))
-	if !strings.Contains(gitmodules, "path = .agents/skills/dex-app-builder/upstream") ||
-		!strings.Contains(gitmodules, "url = https://github.com/superdurable/dex-skills.git") {
-		t.Fatal("Dex skill submodule path or public HTTPS URL is not allowlisted")
+	// The installed Dex Skills release loaded by the coding-agent host is the
+	// only skill authority; the repository never vendors a project-local copy.
+	if !strings.Contains(agents, "`dex-app-builder` skill") {
+		t.Error("AGENTS.md must require the installed dex-app-builder skill")
 	}
-	if _, err := os.Stat(filepath.Join(root, ".agents/skills/dex-sdk/SKILL.md")); err != nil {
-		t.Fatalf("Dex SDK wrapper: %v", err)
+	for name, contents := range map[string]string{"AGENTS.md": agents, "README.md": readme} {
+		normalized := strings.Join(strings.Fields(contents), " ")
+		for _, stale := range []string{"/opt/superverse/dex-skills", "submodule", "pinned upstream skill", "local `dex-app-builder`"} {
+			if strings.Contains(normalized, stale) {
+				t.Errorf("%s still describes a project-local Dex skill (%q)", name, stale)
+			}
+		}
 	}
-	command := exec.Command("git", "ls-files", "--stage", ".agents/skills/dex-app-builder/upstream")
-	command.Dir = root
-	output, err := command.Output()
-	if err != nil {
-		t.Fatalf("read Dex skill submodule pin: %v", err)
-	}
-	fields := strings.Fields(string(output))
-	if len(fields) < 2 || fields[0] != "160000" || fields[1] != "45410a3ceea6f5a726f28573cbdef0432d1d9405" {
-		t.Fatalf("Dex skill is not pinned as a gitlink: %q", output)
+	for _, removedPath := range []string{".gitmodules", ".agents"} {
+		if _, err := os.Stat(filepath.Join(root, removedPath)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("removed project-local skill path %q still exists (stat error: %v)", removedPath, err)
+		}
 	}
 }
 

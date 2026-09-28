@@ -3,10 +3,14 @@
 This repository is the Dex Tech Blog process product: a Slack-triggered Dex
 Process that produces a tech blog post and newsletter, with review in Dex Web.
 It is a Superverse `go-react-v1`
-application adapted from the basic-process template. Read
-`.superverse/template.json`, `openapi/openapi.yaml`, and the local
-`dex-app-builder` skill before changing product behavior. Its pinned upstream
-skill loads the sibling `dex-sdk` Core and Go guidance for backend work.
+application adapted from the basic-process template (release `v1.6.1`). Read
+`.superverse/template.json` and `openapi/openapi.yaml`, then load the installed
+`dex-app-builder` skill through the current coding-agent host before changing
+product behavior; it loads the sibling `dex-sdk` Core and Go guidance for
+backend work. Superverse Coding Sandbox preinstalls a pinned Dex Skills
+release; external developers install the released Dex plugin in their coding
+agent. Never assume a fixed skill path. This repository must not vendor, clone,
+or initialize a project-local copy.
 
 ## UI mode: No custom UI
 
@@ -91,8 +95,13 @@ If `make check` fails or cannot run, report `blocked=true`. Do not weaken, skip,
 or delete a failing check.
 
 `DEX_SERVER_BASELINE` and `DEX_CLI_BASELINE` pin Dex Server `server/v0.13.2`
-and Dex CLI `cli-v0.13.8`; `go.mod` pins the Dex Go SDK `v0.12.1`. Advance
-them together with the contract test in `internal/templatecontract`.
+and Dex CLI `cli-v0.13.8`; `go.mod` pins the Dex Go SDK `v0.13.1`. These are
+the pins of basic-process template `v1.6.1`. Advance them only together with
+the template release and the contract test in `internal/templatecontract`. The
+template's release machinery (`scripts/check-template-version.py`, the release
+CI job) and its scheduled `update-dex-dependencies` workflow are not ported:
+this repository is an application, not a template release, and its dependency
+updates are reviewed by hand.
 
 `make bootstrap`, `npm ci`, and `go mod download` may restore dependencies
 already declared by the committed manifests and lockfiles. Before adding or
