@@ -89,8 +89,9 @@ HMR without Dex on `MOCK_WEB_PORT` (default `8080`) and `MOCK_API_PORT`
 (default `18081`). The mock is a contract test double: `cmd/mock-server` and
 `internal/mockserver` implement the generated server interface, import only
 `internal/api/generated` from this module, and never reach the Flows, the
-runtime, or a provider. `/__mock__/control` accepts `reset` and `fail-next`
-(the next subscribe answers 503); the page has no mock controls.
+runtime, or a provider. `/__mock__/control` accepts `reset`, `fail-next`
+(the next subscribe answers 503), and `full-next` (the next valid subscribe
+answers 409); the page has no mock controls.
 `make test-mock-e2e` runs `web/e2e/mock-newsletter-subscription.spec.ts`
 against it on free ports. Mock verification does not replace the real Dex
 integration and E2E tests.

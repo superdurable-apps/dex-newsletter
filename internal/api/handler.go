@@ -92,11 +92,6 @@ func (handler *Handler) SubscribeToNewsletter(ctx context.Context, request *gene
 	}
 }
 
-type errorResponse struct {
-	Error   string `json:"error"`
-	Message string `json:"message"`
-}
-
 func writeGeneratedError(_ context.Context, w http.ResponseWriter, _ *http.Request, err error) {
 	if status := ogenerrors.ErrorCode(err); status >= 400 && status < 500 {
 		writeError(w, status, "invalid_request", "request does not match the OpenAPI contract")
@@ -108,5 +103,5 @@ func writeGeneratedError(_ context.Context, w http.ResponseWriter, _ *http.Reque
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(errorResponse{Error: code, Message: message})
+	_ = json.NewEncoder(w).Encode(generated.Error{Error: code, Message: message})
 }

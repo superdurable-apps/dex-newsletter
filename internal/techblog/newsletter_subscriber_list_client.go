@@ -57,18 +57,30 @@ func (listClient NewsletterSubscriberListClient) AddNewsletterSubscriber(ctx con
 	return result, err
 }
 
-// ListNewsletterSubscribers returns the current subscriber addresses.
+// ListNewsletterSubscribers returns the current subscriber addresses in one
+// attempt. It runs inside a Step, whose retry policy owns every retry: a
+// concurrent subscription holding the list lock returns dex.RetryAfter, so
+// Dex records and schedules the next attempt instead of an in-memory loop.
 func (listClient NewsletterSubscriberListClient) ListNewsletterSubscribers(ctx context.Context) ([]string, error) {
+	client, err := listClient.dexClient()
+	if err != nil {
+		return nil, err
+	}
 	var addresses []string
-	if err := listClient.invokeLocked(ctx, listClient.flow.ListNewsletterSubscribers, nil, &addresses); err != nil {
+	err = client.InvokeRPC(ctx, listClient.flowID, listClient.flow.ListNewsletterSubscribers, nil, &addresses)
+	var conflict *dex.RPCLockConflictError
+	if errors.As(err, &conflict) {
+		return nil, dex.RetryAfter(time.Second, err)
+	}
+	if err != nil {
 		return nil, err
 	}
 	return addresses, nil
 }
 
-// invokeLocked invokes an RPC that takes the list lock. While another call
-// holds the lock it retries with jittered backoff until ctx ends, so the
-// caller's deadline bounds the wait.
+// invokeLocked invokes an RPC that takes the list lock outside a Step, from
+// the subscription API. While another call holds the lock it retries with
+// jittered backoff until ctx ends, so the caller's deadline bounds the wait.
 func (listClient NewsletterSubscriberListClient) invokeLocked(ctx context.Context, rpc any, input any, output any) error {
 	client, err := listClient.dexClient()
 	if err != nil {

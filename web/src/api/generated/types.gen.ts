@@ -34,7 +34,7 @@ export type GetApplicationInfoData = {
 
 export type GetApplicationInfoResponses = {
     /**
-     * Non-business application identity for the Hello World page.
+     * Application identity for the home page.
      */
     200: ApplicationInfo;
 };

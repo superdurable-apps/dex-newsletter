@@ -53,8 +53,8 @@ github.com/superdurable/dex-connectors-library/connectors/github v0.7.0 h1:Aegr9
 github.com/superdurable/dex-connectors-library/connectors/github v0.7.0/go.mod h1:Qtyt/gRuF5geNGjwsFUmJMnokubyEXwhwUTtqrldonw=
 github.com/superdurable/dex-connectors-library/connectors/google/gemini v0.1.0 h1:IkLbAItfuJ7GP1+ffZEuCumpQYVN9wTHtmsW5wMG3HQ=
 github.com/superdurable/dex-connectors-library/connectors/google/gemini v0.1.0/go.mod h1:rK+z6kyhBee8QGT+uvYJ/zy3tP1y+Z77yzE8mNz4GIM=
-github.com/superdurable/dex-connectors-library/connectors/google/gmail v0.11.0 h1:vpt6HjWhJZih9mNOpc1Y+sFtAEf3Z8cJQRI0Vw+NqrU=
-github.com/superdurable/dex-connectors-library/connectors/google/gmail v0.11.0/go.mod h1:5XuFl4XzMrwrBqNPubGzjxfR58ps//PjN9Y7BKWUPlU=
+github.com/superdurable/dex-connectors-library/connectors/google/gmail v0.12.0 h1:JqWEe0fJ8qyFilzC/DKaI4RVT2VLsSPL49LA2w6h814=
+github.com/superdurable/dex-connectors-library/connectors/google/gmail v0.12.0/go.mod h1:4M9Nkhl3yNHDRGir+g42j9qLAerM/wawp1mrJcELFbI=
 github.com/superdurable/dex-connectors-library/connectors/slack v0.10.0 h1:PGR5FVWgl2B/d7qjajAQWykG1x+Wzmyp6RLKBJn7gIs=
 github.com/superdurable/dex-connectors-library/connectors/slack v0.10.0/go.mod h1:BzvfO8UTA+iP3zpCaNDFHNQGD0VwxGST1MYoZWjU97U=
 github.com/superdurable/dex-connectors-library/sdkgo v0.9.0 h1:pyYiE5yTEdcijxwOdGj7nX0fLt9fFotPFqdGslnFv78=
