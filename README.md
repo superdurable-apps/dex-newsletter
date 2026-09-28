@@ -3,35 +3,45 @@
 A process that writes a newsletter and sends it to its subscribers. The
 product, **Dex Tech Blog**, is a Slack-triggered Dex Process that produces a
 tech blog post and newsletter. Newsletter requests start from Slack, are
-reviewed in Dex Web, and are mailed to the subscribers listed in a Google
-Sheet. This is a Superverse `go-react-v1` application built on the Dex
-basic-process template.
+reviewed in Dex Web, and are mailed to the readers who subscribed on the
+application's home page. Subscribers are stored in Dex. This is a Superverse
+`go-react-v1` application built on the Dex basic-process template `v1.6.1`.
 
 ## Not yet built
 
-Subscribers are managed by hand in the Google Sheet. Readers can't join or
-leave the list themselves yet:
+Readers can subscribe on the home page, but they can't leave the list yet:
 
-- **Subscribe:** no signup path adds a row to the subscriber sheet.
-- **Unsubscribe:** delivery skips rows whose status is `unsubscribed`, but no
-  newsletter carries an unsubscribe link or a `List-Unsubscribe` header yet.
+- **Unsubscribe:** no newsletter carries an unsubscribe link or a
+  `List-Unsubscribe` header, and there is no way to remove an address. The
+  released Gmail connector cannot set custom message headers yet.
+- **Confirmation:** a subscription takes effect immediately, with no
+  confirmation email (double opt-in), so anyone who can reach the page can add
+  any address. Keep the page on a trusted network until confirmation exists.
 
 Tracked in [#2](https://github.com/superdurable-apps/dex-newsletter/issues/2).
 
-## UI mode: No custom UI
+## UI mode: Custom UI (subscription form only)
 
-Dex Web v2 is the complete process-management surface: Runs, Work Queue,
-search, details, edits, and Actions. The application keeps only:
+Dex Web v2 is still the complete process-management surface: Runs, Work Queue,
+search, details, edits, and Actions. The application adds exactly one
+reader-facing control:
 
-- a non-business Hello World React page that shows the application name and an
-  **Open Dex Web** link;
-- the Go HTTP server, which serves the page and the API;
-- one OpenAPI operation, `getApplicationInfo` (`GET /api/application-info`),
-  with its generated Go server and TypeScript client.
+- the home page shows the application name, an **Open Dex Web** link, and a
+  newsletter subscription form with one **Email** field and a **Subscribe**
+  button;
+- the Go HTTP server serves the page and the API;
+- two OpenAPI operations with their generated Go server and TypeScript client:
+  `getApplicationInfo` (`GET /api/application-info`) and
+  `subscribeToNewsletter` (`POST /api/newsletter/subscriptions`).
 
-There are no approval, status, list, detail, or retry routes or controls in
-this application, and no mock server. Slack ingress is a Dex Connector Trigger,
-not an application webhook.
+`subscribeToNewsletter` answers 200 with the canonical address whether it was
+new or already on the list, so it never reveals who is subscribed; 400 for an
+address that is not a single deliverable address, 409 when the list is full
+(`newsletter.maxRecipients`), and 503 when Dex cannot be reached. There are no
+approval, status, list, detail, or retry routes or controls. `make mock` runs
+the page against an in-memory mock of the OpenAPI contract and
+`make test-mock-e2e` drives it; `make test-e2e` runs the real journey against
+Dex. Slack ingress is a Dex Connector Trigger, not an application webhook.
 
 ## Process
 
@@ -57,11 +67,13 @@ to the same run.
 4. **Editorial review** — the run waits in the Dex Web Work Queue. A reminder is
    posted to the Slack thread after `review.reminderInterval`; the review expires
    after `review.maxReminders` more intervals.
-5. **Delivery** — subscribers are read from Google Sheets (validated, de-duplicated,
-   unsubscribed rows dropped, capped at `newsletter.maxRecipients`) and each one gets
-   their own Gmail message. A rejected address is recorded; an unconfirmed send is
-   recorded as `uncertain` and is never resent automatically. The thread gets a
-   delivery report.
+5. **Delivery** — the run snapshots the [subscriber list](#subscribers)
+   (re-validated, de-duplicated, capped at `newsletter.maxRecipients`) and sends each
+   subscriber their own Gmail message. Each send runs synchronously so it is never
+   replayed. A rejected address is recorded; an unconfirmed send is recorded as
+   `uncertain` and is never resent automatically. The run's Dex Web detail view lists
+   every rejected, unconfirmed, or failed recipient under **Recipients to check before
+   resending**, and the thread gets a delivery report with counts only.
 
 Every language-model call goes through `LanguageModelGenerationFlow`, a
 provider-neutral SubFlow. Gemini is the only registered provider; adding one means
@@ -70,7 +82,40 @@ adding its Connector Step and completion Step there and listing it in
 
 Any stage whose provider or model output is unusable moves the run to
 `needs-attention` and posts to the thread; an operator retries the stage or
-abandons the request from Dex Web.
+abandons the request from Dex Web. Abandoning a run whose delivery had already
+started (or leaving it unrecovered for 7 days) closes it as `delivery-stopped`
+with the delivery counts and tells the thread not to post the request again,
+because a new request would email every subscriber a second time.
+
+### Subscribers
+
+`NewsletterSubscriberListFlow` owns the subscriber list. It is one long-lived
+Flow with the fixed ID `newsletter-subscriber-list` and no Steps; the
+application starts it once Dex answers at Worker startup. Its typed RPCs are
+the only way in:
+
+- `AddNewsletterSubscriber`, called by `subscribeToNewsletter`, trims the
+  address, applies the address policy (a single bare ASCII addr-spec with a
+  dotted domain), lowercases it, and appends it unless it is already there or
+  the list holds `newsletter.maxRecipients` addresses. It locks the list, so
+  concurrent subscriptions serialize.
+- `ListNewsletterSubscribers` returns a snapshot; `LoadNewsletterSubscribers`
+  in each `TechBlogNewsletterFlow` run calls it from `Execute` after approval.
+  A failed read is retried for about ten minutes, then the run holds for
+  attention at `load-subscribers`.
+
+Open the `newsletter-subscriber-list` run in Dex Web to see the count and the
+addresses. Don't stop it: a stopped list rejects subscriptions (503) and holds
+deliveries, and the default Flow ID reuse policy keeps the application from
+replacing it with an empty list. The list lives in the Dex state directory, so
+`rm -rf .dex-dev` deletes every subscriber.
+
+Storage decision (Dex Skills 0.25.7 makes Dex state the default store):
+
+| Fact | Owner | Access | Dex primitive | External store |
+| --- | --- | --- | --- | --- |
+| Subscriber addresses (canonical, unique, in subscription order) | `NewsletterSubscriberListFlow` | one locked write per subscription; one whole-list read per approved issue | one Attribute, `newsletter-subscribers`, of at most `newsletter.maxRecipients` (≤ 2000) entries, plus `newsletter-subscriber-count` for Dex Web | none: the list is bounded and always read whole, with no search, joins, or analytics |
+| One issue's audience and delivery outcomes | its `TechBlogNewsletterFlow` run | snapshot at approval; one update per send | Attributes `subscriber-list`, `delivery-summary`, `delivery-exceptions` | none |
 
 ### Dex Web Actions and permissions
 
@@ -91,30 +136,35 @@ Dex Web local permission selector is development-only.
 
 Configure these in Dex Web **Connections** (loopback `dexcli dev`), then restart the
 application so it reloads the connection file. [Setting up providers](#setting-up-providers)
-covers the account-side setup for each one:
+covers the account-side setup for each one. Every capability below was matched by
+exact kind and name against the published
+[connector catalog](https://superdurable.github.io/dex-connectors-library/catalog.yaml)
+and the release-tagged manifest:
 
-| Connector | Connection name | Used for |
-| --- | --- | --- |
-| Slack `v0.10.0` | `slack-workspace` | `tech-blog-newsletter-request` Trigger binding (channel, optional text match, allowed members) and thread replies |
-| GitHub `v0.7.0` | `github-account` | merged PRs, PR files, commits (OAuth grant must be exactly `read:user user:email`) |
-| Gemini `v0.1.0` | `gemini-api` | every language-model stage (API key) |
-| Google Sheets `v0.7.0` | `subscriber-sheets` | `LoadNewsletterSubscribers` Step: spreadsheet, tab, and A1 range are set in its configuration form |
-| Gmail `v0.11.0` | `newsletter-sender` | one message per subscriber from the authorized account |
+| Connector | Release tag ([manifest](https://github.com/superdurable/dex-connectors-library/tree/main/connectors)) | Connection name | Capabilities | Used for |
+| --- | --- | --- | --- | --- |
+| Slack | [`connectors/slack/v0.10.0`](https://github.com/superdurable/dex-connectors-library/blob/connectors/slack/v0.10.0/connectors/slack/connector.yaml) | `slack-workspace` | Trigger `channelThreadCreated`; Mutation `postThreadReply` | `tech-blog-newsletter-request` Trigger binding (channel, optional text match, allowed members) and thread replies |
+| GitHub | [`connectors/github/v0.7.0`](https://github.com/superdurable/dex-connectors-library/blob/connectors/github/v0.7.0/connectors/github/connector.yaml) | `github-account` | Queries `listMergedPullRequests`, `listPullRequestFiles`, `listCommits` | merged PRs, PR files, commits (OAuth grant must be exactly `read:user user:email`) |
+| Gemini | [`connectors/google/gemini/v0.1.0`](https://github.com/superdurable/dex-connectors-library/blob/connectors/google/gemini/v0.1.0/connectors/google/gemini/connector.yaml) | `gemini-api` | Query `generateContent` | every language-model stage (API key; the Connection's model applies unless a stage names one) |
+| Gmail | [`connectors/google/gmail/v0.11.0`](https://github.com/superdurable/dex-connectors-library/blob/connectors/google/gmail/v0.11.0/connectors/google/gmail/connector.yaml) | `newsletter-sender` | Mutation `sendMessage` | one message per subscriber from the authorized account |
 
 Missing connections are logged at startup and the run holds for attention at the
-stage that needs them. The subscriber sheet layout is described under
-[Google Sheets](#google-sheets-subscriber-sheets).
+stage that needs them. Subscribers need no connection: they live in Dex.
 
 ### Process configuration
 
 `config/tech-blog.example.json` is the complete default configuration (repository
-catalog, lookback limits, per-stage models and token limits, blog voice, artifact
-directory, public blog URL, sheet layout, review timing). Copy it, edit it, and set
+catalog, lookback limits, per-stage token limits, blog voice, artifact directory,
+public blog URL, subscriber and recipient cap, footer, review timing). Copy it, edit it, and set
 `TECH_BLOG_CONFIG_FILE`. Fields you omit keep their defaults; unknown fields are
 rejected. A `research.repositories` list you set replaces the default catalog;
 give every field of each entry, because an omitted field keeps the value of the
-default entry at the same position. Every stage defaults to
-`gemini-3.5-flash-lite` with no `temperature` ([why](#gemini-gemini-api)).
+default entry at the same position. Every stage leaves `model` blank, so it uses the
+model chosen on the `gemini-api` Connection in Dex Web; set `model` on a stage to
+override it there. No stage sets `temperature` ([why](#gemini-gemini-api)). A file
+written for the old Google Sheet (`newsletter.subscriberSheet`,
+`emailColumnHeader`, `statusColumnHeader`, `unsubscribedStatusValues`) is
+rejected with a message naming those fields; delete them.
 
 ## Requirements
 
@@ -200,8 +250,8 @@ outside `.dex-dev/`, so a reset keeps them.
    ```
 
 3. Restart the application: stop `make dev-app` and run it again. The
-   application reads connections, the Slack Trigger binding, and Step
-   configurations (such as `LoadNewsletterSubscribers`) only at startup.
+   application reads connections and the Slack Trigger binding only at
+   startup.
    Dex does not need a restart. Without `DEX_CONNECTOR_CONFIG_FILE`,
    `make dev-app` warns and every connection stays unconfigured.
 
@@ -250,7 +300,8 @@ configuration need a `make dev-app` restart.
   (Generative Language API).
 - The key's project needs prepaid credits. Without them every call fails with
   HTTP 402 and the run moves to `needs-attention`; add credits, then retry.
-- Gemini 2.x models are closed to new projects, so every stage defaults to
+- Gemini 2.x models are closed to new projects. Choose the model on the
+  `gemini-api` Connection; when it is blank the connector uses
   `gemini-3.5-flash-lite`. `temperature` is left unset so Gemini 3 uses its own
   default. Override `model`, `temperature`, `thinkingBudget`, or
   `maxOutputTokens` per stage in `TECH_BLOG_CONFIG_FILE`.
@@ -300,69 +351,40 @@ configuration need a `make dev-app` restart.
   as `trigger event skipped: filtered`. Restart the application after changing
   the binding.
 
-### Google Sheets (`subscriber-sheets`)
-
-- Use the same Google Cloud Web OAuth client as Gmail (below) and enable the
-  Google Sheets API.
-- The connector's `drive.file` scope only sees spreadsheets that the OAuth
-  client created or was granted. A spreadsheet you create in Google Sheets by
-  hand is invisible to it, so connect `subscriber-sheets` first and then create
-  the sheet with its token:
-
-  ```bash
-  scripts/local-connections/create-subscriber-sheet.py --subscriber you@example.com
-  ```
-
-  It prints the spreadsheet ID. Set it, the tab (`Subscribers`), and the range
-  (`A:B`) in the `LoadNewsletterSubscribers` Step configuration in Dex Web, or
-  in `newsletter.subscriberSheet` in `TECH_BLOG_CONFIG_FILE`, then restart the
-  application (`make dev-app`); both are read only at startup. A Dex Web Step
-  configuration replaces `newsletter.subscriberSheet` as a whole, so set all
-  three fields there: nothing is filled in from the file, an empty range
-  leaves the sheet unconfigured, and an empty tab reads the first tab.
-- Layout: a header row with `email` and `status`, one subscriber per row. Rows
-  whose status is `unsubscribed`, `opted-out`, or `bounced` are skipped; any
-  other status, or none, is mailed. Status filtering fails closed: while
-  `newsletter.statusColumnHeader` is `status` (the default), a sheet without a
-  `status` header holds delivery for attention instead of mailing everyone.
-  Set it to `""` to send without status filtering.
-
 ### Gmail (`newsletter-sender`)
 
 - In Google Cloud, enable the Gmail API and create an OAuth client of type
   **Web application** with the authorized redirect URI
   `http://127.0.0.1:8802/api/v2/connector-oauth/callback`. Enter its client ID
-  and secret in Dex Web for both Google connections.
+  and secret in Dex Web for the Gmail connection.
 - On the OAuth consent screen, add the sender account as a test user while the
   app is External and in Testing, or choose the Internal audience in a Google
   Workspace organization.
 - When Google asks for consent, tick every checkbox. An unticked scope is not
   granted and the connection fails its scope check.
 - Dex Web stores only the short-lived Google access token, not a refresh
-  token, so a local Google connection works for about an hour. Subscribers are
-  read and mail is sent only after approval: approve within the hour, or
-  reconnect `subscriber-sheets` and `newsletter-sender` (each reconnect asks
-  for the OAuth client ID and secret again, because Dex Web does not store
-  them) and choose **Retry failed stage**.
-- If Dex Web refuses the Gmail grant (Gmail connector `v0.11.0` with Dex CLI
-  `v0.13.8` fails with `CONNECTOR_OAUTH_SCOPE_INSUFFICIENT`, because Google
+  token, so a local Google connection works for about an hour. Mail is sent
+  only after approval: approve within the hour, or reconnect
+  `newsletter-sender` (each reconnect asks for the OAuth client ID and secret
+  again, because Dex Web does not store them) and choose **Retry failed
+  stage**.
+- If Dex Web refuses the Gmail grant (Gmail connector `v0.11.1` and earlier with
+  Dex CLI `v0.13.8` fail with `CONNECTOR_OAUTH_SCOPE_INSUFFICIENT`, because Google
   reports the requested `email` scope as
-  `https://www.googleapis.com/auth/userinfo.email`), store a token obtained in
-  the [Google OAuth 2.0 Playground](https://developers.google.com/oauthplayground)
+  `https://www.googleapis.com/auth/userinfo.email`; the fix is merged upstream
+  and awaits its release), store a token obtained in the
+  [Google OAuth 2.0 Playground](https://developers.google.com/oauthplayground)
   instead:
   1. Add `https://developers.google.com/oauthplayground` as a second authorized
      redirect URI of the Web client.
   2. In the Playground settings, choose **Use your own OAuth credentials** and
      enter the client ID and secret.
-  3. Authorize `openid email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send`
+  3. Authorize `openid https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send`
      as the sender account, exchange the code for tokens, and copy the access
      token.
   4. Run `scripts/local-connections/set-google-connection.py --connector gmail`,
      paste the token at the hidden prompt, then enter the sender account's
      email address (or pass `--primary-email`).
-
-  The same steps work for Sheets with `--connector google-sheets` and the scope
-  `https://www.googleapis.com/auth/drive.file`.
 
 ### Quick-test profile
 
@@ -387,7 +409,7 @@ example, `$HOME/tech-blog.quick.json`, export
       {
         "owner": "superdurable",
         "name": "dex-connectors-library",
-        "description": "Official Dex connectors (Slack, Gmail, Google Sheets, GitHub, OpenAI, HTTP), the connector SDK, manifests, and code generation.",
+        "description": "Official Dex connectors (Slack, Gmail, Google Sheets, GitHub, and language-model providers such as Gemini, OpenAI, and Claude), the connector SDK, manifests, and code generation.",
         "topics": ["connectors", "integrations", "triggers", "connector sdk"],
         "pathHints": ["connectors/", "sdkgo/"]
       }
@@ -395,13 +417,6 @@ example, `$HOME/tech-blog.quick.json`, export
   },
   "blog": {
     "styleGuide": "Quick test post: about 400 words, 2 or 3 short sections, concrete and technical, at most one short code snippet, no marketing language."
-  },
-  "newsletter": {
-    "subscriberSheet": {
-      "spreadsheetId": "SPREADSHEET_ID_FROM_create-subscriber-sheet.py",
-      "tab": "Subscribers",
-      "range": "A:B"
-    }
   }
 }
 ```
@@ -415,8 +430,7 @@ it) and never print a token.
 
 | Script | Does |
 | --- | --- |
-| `set-google-connection.py --connector gmail\|google-sheets` | Stores a Google access token you obtained yourself as `newsletter-sender` or `subscriber-sheets`. It reads the token at a hidden prompt, or with `--from-clipboard` from the macOS clipboard, which it then clears. For Gmail it also asks for the sender's email address (`--primary-email` skips the prompt and is required with `--from-clipboard`). It backs up the file to a new `connections.json.bak-<timestamp>` that is mode `0600` from creation, replaces only that connection, writes the file atomically with mode `0600`, and sets `credentialExpiresAt` 55 minutes ahead. |
-| `create-subscriber-sheet.py [--subscriber EMAIL]...` | Creates the subscriber spreadsheet (`email` and `status` headers on a `Subscribers` tab) with the stored `subscriber-sheets` token and prints its URL and ID. |
+| `set-google-connection.py --connector gmail` | Stores a Google access token you obtained yourself as `newsletter-sender`. It reads the token at a hidden prompt, or with `--from-clipboard` from the macOS clipboard, which it then clears. For Gmail it also asks for the sender's email address (`--primary-email` skips the prompt and is required with `--from-clipboard`). It backs up the file to a new `connections.json.bak-<timestamp>` that is mode `0600` from creation, replaces only that connection, writes the file atomically with mode `0600`, and sets `credentialExpiresAt` 55 minutes ahead. |
 
 Backups hold the same plaintext credentials; delete them when you are done.
 `make test-unit` runs the helpers' offline tests.
@@ -458,9 +472,11 @@ on success and kept (with its path printed) on failure.
 
 `make test-e2e` builds the server binary into that directory, runs it, and on
 exit stops that process and waits for it, so no server is left running. The
-Playwright suite loads the production page, asserts the application name
-renders without any buttons, and checks that `GET /api/application-info`
-returns 200 while the removed `/api/flows` management routes return 404.
+Playwright suite loads the production page, asserts that the application name
+and the subscription form (one Email field, one Subscribe button) render,
+subscribes a fresh address through the real Dex subscriber list, and checks
+that the removed `/api/flows` management routes return 404. `make
+test-mock-e2e` runs the same page against the in-memory mock server.
 
 `make check-fdg-v2` validates every `internal/techblog/*_flow.go` file with
 rendering schema 2.0 and requires a diagnostic-free graph with `valid: true`.
