@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/superdurable-apps/dex-newsletter/internal/api/generated"
 )
 
 func newTestHandler(t *testing.T) http.Handler {
@@ -120,7 +122,7 @@ func TestServerRejectsRoutesOutsideTheContract(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
 			response := assertStatus(t, request(t, handler, tc.method, tc.path, map[string]any{}), tc.status)
-			var body errorResponse
+			var body generated.Error
 			decode(t, response, &body)
 			if body.Error != tc.code {
 				t.Fatalf("error code = %q, want %q", body.Error, tc.code)
@@ -199,7 +201,7 @@ func assertStatus(t *testing.T, response *http.Response, want int) *http.Respons
 
 func assertError(t *testing.T, response *http.Response, status int, code, message string) {
 	t.Helper()
-	var body errorResponse
+	var body generated.Error
 	decode(t, assertStatus(t, response, status), &body)
 	if body.Error != code || body.Message != message {
 		t.Fatalf("error = %+v, want %q %q", body, code, message)

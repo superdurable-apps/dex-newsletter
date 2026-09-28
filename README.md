@@ -126,7 +126,15 @@ Storage decision (Dex Skills 0.25.7 makes Dex state the default store):
 | Fact | Owner | Access | Dex primitive | External store |
 | --- | --- | --- | --- | --- |
 | Subscriber addresses (canonical, unique, in subscription order) | `NewsletterSubscriberListFlow` | one locked write per subscription; one whole-list read per approved issue | one Attribute, `newsletter-subscribers`, of at most `newsletter.maxRecipients` (≤ 2000) entries, plus `newsletter-subscriber-count` for Dex Web | none: the list is bounded and always read whole, with no search, joins, or analytics |
-| One issue's audience and delivery outcomes | its `TechBlogNewsletterFlow` run | snapshot at approval; one update per send | Attributes `subscriber-list`, `delivery-summary`, `delivery-exceptions` | none |
+| One issue's audience and delivery outcomes | its `TechBlogNewsletterFlow` run | snapshot at approval; one update per send | Attributes `subscriber-list` and `delivery-summary`; AttributeMap `delivery-exceptions`, one instance per unconfirmed or rejected recipient | none |
+
+Upgrading from the Google Sheet version is a one-way migration. The Sheet's
+subscribers are not imported (the list starts empty), and the Step types
+`PrepareNewsletterDelivery`, `RecordSubscriberSheetFailure`, and
+`HoldSubscriberSheetAfterRetries` no longer exist, so a run that was open
+between approval and its first send when the old build stopped cannot resume.
+Finish or abandon such runs before upgrading, and delete the removed Sheet
+fields from `TECH_BLOG_CONFIG_FILE`.
 
 ### Dex Web Actions and permissions
 
@@ -157,7 +165,7 @@ and the release-tagged manifest:
 | Slack | [`connectors/slack/v0.10.0`](https://github.com/superdurable/dex-connectors-library/blob/connectors/slack/v0.10.0/connectors/slack/connector.yaml) | `slack-workspace` | Trigger `channelThreadCreated`; Mutation `postThreadReply` | `tech-blog-newsletter-request` Trigger binding (channel, optional text match, allowed members) and thread replies |
 | GitHub | [`connectors/github/v0.7.0`](https://github.com/superdurable/dex-connectors-library/blob/connectors/github/v0.7.0/connectors/github/connector.yaml) | `github-account` | Queries `listMergedPullRequests`, `listPullRequestFiles`, `listCommits` | merged PRs, PR files, commits (OAuth grant must be exactly `read:user user:email`) |
 | Gemini | [`connectors/google/gemini/v0.1.0`](https://github.com/superdurable/dex-connectors-library/blob/connectors/google/gemini/v0.1.0/connectors/google/gemini/connector.yaml) | `gemini-api` | Query `generateContent` | every language-model stage (API key; the Connection's model applies unless a stage names one) |
-| Gmail | [`connectors/google/gmail/v0.11.0`](https://github.com/superdurable/dex-connectors-library/blob/connectors/google/gmail/v0.11.0/connectors/google/gmail/connector.yaml) | `newsletter-sender` | Mutation `sendMessage` | one message per subscriber from the authorized account |
+| Gmail | [`connectors/google/gmail/v0.12.0`](https://github.com/superdurable/dex-connectors-library/blob/connectors/google/gmail/v0.12.0/connectors/google/gmail/connector.yaml) | `newsletter-sender` | Mutation `sendMessage` | one message per subscriber from the authorized account |
 
 Missing connections are logged at startup and the run holds for attention at the
 stage that needs them. Subscribers need no connection: they live in Dex.
@@ -212,7 +220,7 @@ make dev-app   # terminal 2: page, HTTP server, and Dex Worker; restart freely
 | `make dev-app` | Builds the page and the server binary, then runs the server and Dex Worker against `DEX_FLOW_SERVICE_ADDRESS=127.0.0.1:8801`. |
 | `make dev` | Both in one terminal. Stopping it stops Dex too. |
 
-Open <http://127.0.0.1:8080> for the Hello World page and manage Runs, the Work
+Open <http://127.0.0.1:8080> for the home page and its subscription form, and manage Runs, the Work
 Queue, and Actions in Dex Web at <http://127.0.0.1:8802>. Use the two-terminal
 form whenever you will restart the application (after configuring connections,
 changing Go code, or editing `TECH_BLOG_CONFIG_FILE`): only `make dev-app`
@@ -379,12 +387,12 @@ configuration need a `make dev-app` restart.
   `newsletter-sender` (each reconnect asks for the OAuth client ID and secret
   again, because Dex Web does not store them) and choose **Retry failed
   stage**.
-- If Dex Web refuses the Gmail grant (Gmail connector `v0.11.1` and earlier with
-  Dex CLI `v0.13.8` fail with `CONNECTOR_OAUTH_SCOPE_INSUFFICIENT`, because Google
-  reports the requested `email` scope as
-  `https://www.googleapis.com/auth/userinfo.email`; the fix is merged upstream
-  and awaits its release), store a token obtained in the
-  [Google OAuth 2.0 Playground](https://developers.google.com/oauthplayground)
+- Gmail `v0.12.0` requests the canonical
+  `https://www.googleapis.com/auth/userinfo.email` scope, so Dex Web saves the
+  grant. Versions `v0.11.1` and earlier requested the `email` alias and failed
+  with `CONNECTOR_OAUTH_SCOPE_INSUFFICIENT`; a connection saved under them must
+  be reconnected once. If Dex Web still refuses a grant, store a token obtained
+  in the [Google OAuth 2.0 Playground](https://developers.google.com/oauthplayground)
   instead:
   1. Add `https://developers.google.com/oauthplayground` as a second authorized
      redirect URI of the Web client.

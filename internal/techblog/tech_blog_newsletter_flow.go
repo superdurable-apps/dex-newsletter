@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -54,6 +55,7 @@ const (
 	maximumReasonRunes        = 500
 	maximumPreviewRunes       = 60000
 	subscriberListReadTimeout = 30 * time.Second
+	deliveryExceptionKeyForm  = "recipient-%05d"
 )
 
 // Request status values. Action eligibility is keyed on these values.
@@ -123,30 +125,33 @@ var (
 		"newsletter-requester",
 		dex.Indexed(dex.AttributeIndex{Type: dex.IndexKeyword}),
 	)
-	newsletterRequest         = dex.DefineAttribute[model.NewsletterRequest]("newsletter-request")
-	requestInterpretation     = dex.DefineAttribute[model.RequestInterpretation]("request-interpretation")
-	changeWindow              = dex.DefineAttribute[model.ChangeWindow]("change-window")
-	changeWindowDescription   = dex.DefineAttribute[string]("change-window-description")
-	repositoryDigests         = dex.DefineAttribute[[]model.RepositoryChangeDigest]("repository-digests")
-	researchBrief             = dex.DefineAttribute[model.ResearchBrief]("research-brief")
-	blogPost                  = dex.DefineAttribute[model.BlogPost]("blog-post")
-	blogPostTitle             = dex.DefineAttribute[string]("blog-post-title")
-	blogHTML                  = dex.DefineAttribute[string]("blog-html")
-	blogArtifactPath          = dex.DefineAttribute[string]("blog-artifact-path")
-	publishedBlogURL          = dex.DefineAttribute[string]("published-blog-url")
-	newsletterDraft           = dex.DefineAttribute[model.NewsletterDraft]("newsletter-draft")
-	renderedNewsletter        = dex.DefineAttribute[model.RenderedNewsletter]("rendered-newsletter")
-	newsletterSubject         = dex.DefineAttribute[string]("newsletter-subject")
-	deliveryNewsletter        = dex.DefineAttribute[model.RenderedNewsletter]("delivery-newsletter")
-	blogRevisionCount         = dex.DefineAttribute[int64]("blog-revision-count")
-	editorFeedback            = dex.DefineAttribute[string]("editor-feedback")
-	reviewGateKey             = dex.DefineAttribute[string]("review-gate-key")
-	reviewReminderCount       = dex.DefineAttribute[int64]("review-reminder-count")
-	subscriberList            = dex.DefineAttribute[model.SubscriberList]("subscriber-list")
-	subscriberCount           = dex.DefineAttribute[int64]("subscriber-count")
-	deliveryCursor            = dex.DefineAttribute[int64]("delivery-cursor")
-	deliverySummary           = dex.DefineAttribute[model.DeliverySummary]("delivery-summary")
-	deliveryExceptions        = dex.DefineAttribute[[]model.DeliveryException]("delivery-exceptions")
+	newsletterRequest       = dex.DefineAttribute[model.NewsletterRequest]("newsletter-request")
+	requestInterpretation   = dex.DefineAttribute[model.RequestInterpretation]("request-interpretation")
+	changeWindow            = dex.DefineAttribute[model.ChangeWindow]("change-window")
+	changeWindowDescription = dex.DefineAttribute[string]("change-window-description")
+	repositoryDigests       = dex.DefineAttribute[[]model.RepositoryChangeDigest]("repository-digests")
+	researchBrief           = dex.DefineAttribute[model.ResearchBrief]("research-brief")
+	blogPost                = dex.DefineAttribute[model.BlogPost]("blog-post")
+	blogPostTitle           = dex.DefineAttribute[string]("blog-post-title")
+	blogHTML                = dex.DefineAttribute[string]("blog-html")
+	blogArtifactPath        = dex.DefineAttribute[string]("blog-artifact-path")
+	publishedBlogURL        = dex.DefineAttribute[string]("published-blog-url")
+	newsletterDraft         = dex.DefineAttribute[model.NewsletterDraft]("newsletter-draft")
+	renderedNewsletter      = dex.DefineAttribute[model.RenderedNewsletter]("rendered-newsletter")
+	newsletterSubject       = dex.DefineAttribute[string]("newsletter-subject")
+	deliveryNewsletter      = dex.DefineAttribute[model.RenderedNewsletter]("delivery-newsletter")
+	blogRevisionCount       = dex.DefineAttribute[int64]("blog-revision-count")
+	editorFeedback          = dex.DefineAttribute[string]("editor-feedback")
+	reviewGateKey           = dex.DefineAttribute[string]("review-gate-key")
+	reviewReminderCount     = dex.DefineAttribute[int64]("review-reminder-count")
+	subscriberList          = dex.DefineAttribute[model.SubscriberList]("subscriber-list")
+	subscriberCount         = dex.DefineAttribute[int64]("subscriber-count")
+	deliveryCursor          = dex.DefineAttribute[int64]("delivery-cursor")
+	deliverySummary         = dex.DefineAttribute[model.DeliverySummary]("delivery-summary")
+	// deliveryExceptions keeps one instance per unconfirmed or rejected
+	// recipient, keyed by its zero-padded delivery position, so recording one
+	// never rewrites the others.
+	deliveryExceptions        = dex.DefineAttributeMap[model.DeliveryException]("delivery-exceptions")
 	failedStage               = dex.DefineAttribute[string]("failed-stage")
 	attentionReason           = dex.DefineAttribute[string]("attention-reason")
 	attentionGateKey          = dex.DefineAttribute[string]("attention-gate-key")
@@ -447,7 +452,7 @@ func (flow *TechBlogNewsletterFlow) GetSteps() []dex.StepDef {
 func (flow *TechBlogNewsletterFlow) GetRPCs() []dex.RPCDef {
 	return []dex.RPCDef{
 		dex.DefineRPC(flow.GetDexSummary, nil),
-		dex.DefineRPC(flow.GetDexDisplay, nil),
+		dex.DefineRPC(flow.GetDexDisplay, &dex.RPCOptions{LoadAttributeMaps: []dex.AttributeDef{deliveryExceptions}}),
 		dex.DefineRPC(flow.ApproveNewsletterForDelivery, &dex.RPCOptions{
 			Action: dex.DefineAction(
 				"Approve and send newsletter",
@@ -560,7 +565,7 @@ func (*TechBlogNewsletterFlow) GetDexSummary(ctx dex.Context, _ dex.None) (*dex.
 // dex:field attribute-key:failed-stage value-type:string editable:false description:"Failed stage"
 // dex:field attribute-key:subscriber-count value-type:int64 editable:false description:"Subscribers"
 // dex:field attribute-key:delivery-summary value-type:json editable:false description:"Delivery outcomes"
-// dex:field attribute-key:delivery-exceptions value-type:array editable:false description:"Recipients to check before resending"
+// dex:field attribute-key:delivery-exceptions value-type:attribute-map editable:false description:"Recipients to check before resending"
 // dex:field attribute-key:research-brief value-type:json editable:false description:"Research brief"
 // dex:field attribute-key:repository-digests value-type:array editable:false description:"Repository research"
 // dex:field attribute-key:closing-reason value-type:string editable:false description:"Closing reason"
@@ -584,7 +589,7 @@ func (*TechBlogNewsletterFlow) GetDexDisplay(ctx dex.Context, _ dex.None) (*dex.
 	stage, stageErr := optionalValue(failedStage.Get(ctx))
 	subscribersFound, subscribersErr := optionalValue(subscriberCount.Get(ctx))
 	summary, summaryErr := optionalValue(deliverySummary.Get(ctx))
-	exceptions, exceptionsErr := optionalValue(deliveryExceptions.Get(ctx))
+	exceptions, exceptionsErr := deliveryExceptionList(ctx)
 	brief, briefErr := optionalValue(researchBrief.Get(ctx))
 	digests, digestsErr := optionalValue(repositoryDigests.Get(ctx))
 	closing, closingErr := optionalValue(closingReason.Get(ctx))
@@ -1428,9 +1433,6 @@ func (step LoadNewsletterSubscribers) Execute(ctx dex.Context, _ StageEntry) (*d
 	if err := deliveryCursor.Set(ctx, 0); err != nil {
 		return nil, err
 	}
-	if err := deliveryExceptions.Set(ctx, []model.DeliveryException{}); err != nil {
-		return nil, err
-	}
 	if err := deliverySummary.Set(ctx, model.DeliverySummary{
 		Recipients: len(list.Recipients), SkippedOverLimit: list.TruncatedCount, InvalidAddresses: list.InvalidAddresses,
 	}); err != nil {
@@ -1497,15 +1499,11 @@ func (step RecordNewsletterDelivery) Execute(ctx dex.Context, result gmail.SendM
 	if status != model.DeliverySent {
 		// Operators check these recipients in Dex Web before any resend;
 		// addresses never go to Slack.
-		exceptions, err := optionalValue(deliveryExceptions.Get(ctx))
-		if err != nil {
-			return nil, err
-		}
 		exception := model.DeliveryException{Recipient: list.Recipients[cursor], Status: status}
 		if result.Failure != nil {
 			exception.FailureKind = string(result.Failure.Kind)
 		}
-		if err := deliveryExceptions.Set(ctx, append(exceptions, exception)); err != nil {
+		if err := deliveryExceptions.Set(ctx, fmt.Sprintf(deliveryExceptionKeyForm, cursor), exception); err != nil {
 			return nil, err
 		}
 	}
@@ -2108,6 +2106,23 @@ func currentBlogRevision(ctx dex.Context) (*prompts.BlogRevision, error) {
 		return nil, err
 	}
 	return &prompts.BlogRevision{RevisionNumber: int(revisions), EditorFeedback: feedback, PreviousDraft: previous}, nil
+}
+
+// deliveryExceptionList returns the recorded delivery exceptions in delivery
+// order. The zero-padded instance keys sort in that order; the caller's RPC
+// must load the whole AttributeMap.
+func deliveryExceptionList(ctx dex.Context) ([]model.DeliveryException, error) {
+	keys := deliveryExceptions.AllInstanceKeys(ctx)
+	slices.Sort(keys)
+	exceptions := make([]model.DeliveryException, 0, len(keys))
+	for _, key := range keys {
+		exception, err := deliveryExceptions.Get(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		exceptions = append(exceptions, exception)
+	}
+	return exceptions, nil
 }
 
 func mapSlackThreadReplyToOperationInput(reply SlackThreadReply) slack.PostThreadReplyInput {

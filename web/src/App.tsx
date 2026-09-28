@@ -71,7 +71,7 @@ export function App() {
 
   return (
     <main>
-      <p className="eyebrow">HELLO WORLD</p>
+      <p className="eyebrow">NEWSLETTER</p>
       {state.status === 'loading' && <p aria-busy="true">Loading application…</p>}
       {state.status === 'failed' && <p role="alert" className="error">Application information is unavailable.</p>}
       {state.status === 'ready' && (

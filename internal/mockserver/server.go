@@ -142,11 +142,6 @@ func waitForDuration(ctx context.Context, duration time.Duration) error {
 	}
 }
 
-type errorResponse struct {
-	Error   string `json:"error"`
-	Message string `json:"message"`
-}
-
 // writeGeneratedError answers contract violations the way the real handler does.
 func writeGeneratedError(_ context.Context, w http.ResponseWriter, _ *http.Request, err error) {
 	if status := ogenerrors.ErrorCode(err); status >= 400 && status < 500 {
@@ -157,7 +152,7 @@ func writeGeneratedError(_ context.Context, w http.ResponseWriter, _ *http.Reque
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, errorResponse{Error: code, Message: message})
+	writeJSON(w, status, generated.Error{Error: code, Message: message})
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

@@ -8,7 +8,7 @@ paths:
       operationId: getApplicationInfo
       responses:
         '200':
-          description: Non-business application identity for the Hello World page.
+          description: Application identity for the home page.
           content:
             application/json:
               schema:

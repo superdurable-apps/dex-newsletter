@@ -59,8 +59,8 @@ func CanonicalAddress(candidate string) (string, bool) {
 //   - otherwise its canonical form is appended to Recipients.
 //
 // The subscriber list Flow stores only canonical, unique addresses, so the
-// first three outcomes are a defence against a list edited outside the
-// application rather than an expected path.
+// first three outcomes happen only after a later build tightens the address
+// policy or newsletter.maxRecipients is lowered below the list's size.
 func BuildDeliveryList(addresses []string, maxRecipients int) (model.SubscriberList, error) {
 	if maxRecipients <= 0 {
 		return model.SubscriberList{}, fmt.Errorf("subscriber list: max recipients must be positive, got %d", maxRecipients)
