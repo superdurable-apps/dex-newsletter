@@ -83,6 +83,10 @@ func TestServerMatchesEveryApplicationResponseStatus(t *testing.T) {
 	assertError(t, subscribe(map[string]any{"email": "reader@example.com"}), http.StatusServiceUnavailable, "unavailable", unavailableMessage)
 	assertStatus(t, subscribe(map[string]any{"email": "reader@example.com"}), http.StatusOK).Body.Close()
 
+	assertStatus(t, request(t, handler, http.MethodPost, "/__mock__/control", ControlRequest{Action: "full-next"}), http.StatusOK).Body.Close()
+	assertError(t, subscribe(map[string]any{"email": "reader@example.com"}), http.StatusConflict, "subscriber_list_full", listFullMessage)
+	assertStatus(t, subscribe(map[string]any{"email": "reader@example.com"}), http.StatusOK).Body.Close()
+
 	for name, body := range map[string]any{
 		"empty email":      map[string]any{"email": ""},
 		"missing email":    map[string]any{},

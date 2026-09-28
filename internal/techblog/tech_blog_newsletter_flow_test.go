@@ -80,8 +80,10 @@ func TestAddSubscriberKeepsOneCanonicalEntryPerAddress(t *testing.T) {
 	if result != (AddNewsletterSubscriberResult{Outcome: SubscriptionListFull}) || len(full) != 2 {
 		t.Fatalf("subscription to a full list = %q, %+v", full, result)
 	}
-	if _, result := addSubscriber([]string{"a@example.com", "b@example.com"}, "B@example.com", 2); result.Outcome != SubscriptionAlreadySubscribed {
-		t.Fatalf("an existing subscriber of a full list = %+v, want already-subscribed", result)
+	// A full list answers the same for a subscriber and a stranger, so the
+	// response never reveals who is on it.
+	if _, result := addSubscriber([]string{"a@example.com", "b@example.com"}, "B@example.com", 2); result != (AddNewsletterSubscriberResult{Outcome: SubscriptionListFull}) {
+		t.Fatalf("an existing subscriber of a full list = %+v, want list-full", result)
 	}
 }
 
@@ -92,6 +94,16 @@ func TestAddSubscriberNeverModifiesTheCurrentList(t *testing.T) {
 	updated[0] = "changed@example.com"
 	if current[0] != "a@example.com" || len(current) != 1 {
 		t.Fatalf("addSubscriber aliased the current list: %q", current)
+	}
+}
+
+func TestSubscriberListStartsWithAConstantRequestID(t *testing.T) {
+	first, second := NewsletterSubscriberListStartOptions(), NewsletterSubscriberListStartOptions()
+	if first.RequestID == nil || second.RequestID == nil || *first.RequestID != *second.RequestID {
+		t.Fatalf("start request IDs = %v and %v; every start must send the same ID so Dex returns the existing list", first.RequestID, second.RequestID)
+	}
+	if first.AlreadyStarted == nil || !first.AlreadyStarted.IgnoreError || first.Timeout != nil {
+		t.Fatalf("start options = %+v; want AlreadyStarted.IgnoreError and no timeout", first)
 	}
 }
 

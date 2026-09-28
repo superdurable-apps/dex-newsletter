@@ -1,8 +1,8 @@
 // Package config loads and validates the non-secret process configuration for
 // the tech blog newsletter Process. Credentials never appear here: provider
-// secrets live in the Dex connector connection store, and the Slack channel,
-// subscriber sheet, and other per-connection choices live in Dex Web
-// connection and operation configuration.
+// secrets live in the Dex connector connection store, the Slack channel, the
+// Gemini model, and other per-connection choices live in Dex Web, and
+// subscribers live in the NewsletterSubscriberListFlow.
 package config
 
 import (

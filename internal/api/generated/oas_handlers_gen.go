@@ -158,7 +158,8 @@ func (s *Server) handleGetApplicationInfoRequest(args [0]string, argsEscaped boo
 // handleSubscribeToNewsletterRequest handles subscribeToNewsletter operation.
 //
 // Adds one email address to the newsletter subscriber list. Subscribing an address that is already on
-// the list succeeds with the same response, so the response never reveals list membership.
+// the list succeeds with the same response, and a full list answers 409 for every valid address, so no
+// response reveals list membership.
 //
 // POST /api/newsletter/subscriptions
 func (s *Server) handleSubscribeToNewsletterRequest(args [0]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {

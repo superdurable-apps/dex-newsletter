@@ -24,6 +24,13 @@ func TestApplicationHandlerRoutesAPIPrefixToAPIHandler(t *testing.T) {
 	}
 }
 
+func TestHTTPServerBoundsSlowClients(t *testing.T) {
+	server := newHTTPServer(":0", http.NotFoundHandler())
+	if server.ReadHeaderTimeout <= 0 || server.ReadTimeout <= 0 || server.IdleTimeout <= 0 {
+		t.Fatalf("server timeouts = header %v, read %v, idle %v; want all positive", server.ReadHeaderTimeout, server.ReadTimeout, server.IdleTimeout)
+	}
+}
+
 func TestApplicationHandlerHasNoMockControls(t *testing.T) {
 	handler := applicationHandler(http.NotFoundHandler())
 	for _, method := range []string{http.MethodGet, http.MethodPost} {

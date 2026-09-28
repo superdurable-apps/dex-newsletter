@@ -299,6 +299,24 @@ func TestUnconfirmedGmailSendIsNeverResent(t *testing.T) {
 	}
 }
 
+// TestSlowGmailSendIsNotRepeated makes one send slower than the ASYNC local
+// phase (about seven seconds). The send Step persists synchronously, so Gmail
+// sees it once; under the connector's ASYNC default it would run again.
+func TestSlowGmailSendIsNotRepeated(t *testing.T) {
+	ctx := integrationContext(t, 2*time.Minute)
+	harness := newProcessHarness(t, fakeGeminiBehavior{understood: true, hasNotableChanges: true})
+	harness.providers.gmail.delaySendsTo("alice@example.com", 9*time.Second)
+	flowID := harness.deliverSlackRequest(ctx, "Blog about connectors", 1)
+	harness.approveCurrentDraft(ctx, flowID)
+	result := harness.waitForResult(ctx, flowID)
+	if result.Status != techblog.StatusDelivered || result.Delivery.Sent != 3 {
+		t.Fatalf("result = %+v", result)
+	}
+	if got := harness.providers.gmail.sendCount("alice@example.com"); got != 1 {
+		t.Fatalf("sends to the slow recipient = %d, want exactly 1", got)
+	}
+}
+
 // TestSubscriberListReadFailureHoldsThenRetrySucceeds exhausts the retries of
 // the subscriber list read, holds for an operator, and completes after the
 // retry.
@@ -420,6 +438,99 @@ func TestAbandonAfterPartialDeliveryWarnsAgainstReposting(t *testing.T) {
 	}
 }
 
+// TestSubscriberListRestartKeepsTheListAndShowsItInDexWeb starts the list
+// again, as every application restart does, and reads its Dex Web views.
+func TestSubscriberListRestartKeepsTheListAndShowsItInDexWeb(t *testing.T) {
+	ctx := integrationContext(t, time.Minute)
+	harness := newProcessHarness(t, fakeGeminiBehavior{understood: true, hasNotableChanges: true})
+	for restart := 1; restart <= 2; restart++ {
+		if err := harness.subscriberList.StartList(ctx); err != nil {
+			t.Fatalf("restart %d: StartList = %v, want the existing list returned as success", restart, err)
+		}
+	}
+	addresses, err := harness.subscriberList.ListNewsletterSubscribers(ctx)
+	if err != nil || len(addresses) != defaultTestAudience {
+		t.Fatalf("subscribers after restarts = %q, %v", addresses, err)
+	}
+	var summary, display map[string]any
+	if err := harness.client.InvokeRPC(ctx, harness.subscriberFlowID, harness.subscriberFlow.GetDexSummary, nil, &summary); err != nil {
+		t.Fatalf("list summary: %v", err)
+	}
+	if err := harness.client.InvokeRPC(ctx, harness.subscriberFlowID, harness.subscriberFlow.GetDexDisplay, nil, &display); err != nil {
+		t.Fatalf("list display: %v", err)
+	}
+	if summary["newsletter-subscriber-count"] != float64(defaultTestAudience) || display["newsletter-subscriber-count"] != float64(defaultTestAudience) {
+		t.Fatalf("Dex Web count: summary %v, display %v; want %d", summary, display["newsletter-subscriber-count"], defaultTestAudience)
+	}
+	shown, _ := display["newsletter-subscribers"].([]any)
+	if len(shown) != defaultTestAudience || shown[0] != "alice@example.com" || shown[1] != "bob@example.com" {
+		t.Fatalf("Dex Web addresses = %v, want the canonical list in subscription order", display["newsletter-subscribers"])
+	}
+}
+
+// TestEmptySubscriberListClosesWithoutSending approves an issue while nobody
+// has subscribed yet, the list's initial state.
+func TestEmptySubscriberListClosesWithoutSending(t *testing.T) {
+	ctx := integrationContext(t, 2*time.Minute)
+	harness := newProcessHarnessWithSubscribers(t, fakeGeminiBehavior{understood: true, hasNotableChanges: true}, nil)
+	flowID := harness.deliverSlackRequest(ctx, "Blog about connectors", 1)
+	harness.approveCurrentDraft(ctx, flowID)
+	result := harness.waitForResult(ctx, flowID)
+	if result.Status != techblog.StatusNoSubscribers {
+		t.Fatalf("result = %+v, want %s", result, techblog.StatusNoSubscribers)
+	}
+	if got := harness.providers.gmail.totalSends(); got != 0 {
+		t.Fatalf("Gmail sends = %d, want 0", got)
+	}
+}
+
+// TestStoppedSubscriberListHoldsDelivery stops the list, as an operator might
+// after a flood of bad subscriptions, and checks that nothing is mailed from
+// its last snapshot and that restarts still succeed.
+func TestStoppedSubscriberListHoldsDelivery(t *testing.T) {
+	ctx := integrationContext(t, 2*time.Minute)
+	harness := newProcessHarness(t, fakeGeminiBehavior{understood: true, hasNotableChanges: true})
+	if err := harness.client.StopFlow(ctx, harness.subscriberFlowID, dex.StopOptions{Reason: "flooded"}); err != nil {
+		t.Fatalf("stop the subscriber list: %v", err)
+	}
+	harness.waitFor(ctx, "subscriber list closed", func(attemptContext context.Context) bool {
+		_, err := harness.subscriberList.AddNewsletterSubscriber(attemptContext, "late@example.com")
+		return err != nil
+	})
+	if err := harness.subscriberList.StartList(ctx); err != nil {
+		t.Fatalf("StartList after a stop = %v, want success so the application still starts", err)
+	}
+	flowID := harness.deliverSlackRequest(ctx, "Blog about connectors", 1)
+	harness.approveCurrentDraft(ctx, flowID)
+	display := harness.waitForStatus(ctx, flowID, techblog.StatusNeedsAttention)
+	if display["failed-stage"] != techblog.StageLoadSubscribers {
+		t.Fatalf("failed stage = %v, want %s", display["failed-stage"], techblog.StageLoadSubscribers)
+	}
+	if got := harness.providers.gmail.totalSends(); got != 0 {
+		t.Fatalf("Gmail sends from a stopped list = %d, want 0", got)
+	}
+}
+
+// TestUnrecoveredPausedDeliveryExpiresAsDeliveryStopped lets the 7-day
+// attention wait expire after a partial delivery.
+func TestUnrecoveredPausedDeliveryExpiresAsDeliveryStopped(t *testing.T) {
+	ctx := integrationContext(t, 2*time.Minute)
+	harness := newProcessHarness(t, fakeGeminiBehavior{understood: true, hasNotableChanges: true})
+	harness.providers.gmail.failAuthenticationAfterAccepted(1)
+	flowID := harness.deliverSlackRequest(ctx, "Blog about connectors", 1)
+	harness.approveCurrentDraft(ctx, flowID)
+	harness.waitForStatus(ctx, flowID, techblog.StatusNeedsAttention)
+	harness.skipTimer(ctx, flowID, "WaitForOperatorRecovery", 1)
+	result := harness.waitForResult(ctx, flowID)
+	if result.Status != techblog.StatusDeliveryStopped || result.Delivery.Sent != 1 {
+		t.Fatalf("result = %+v, want delivery-stopped after 1 send", result)
+	}
+	replies := harness.providers.slack.threadReplies(testChannelID)
+	if final := replies[len(replies)-1]; !strings.Contains(final, "Do not post this request again") {
+		t.Fatalf("final reply = %q, want the do-not-repost warning", final)
+	}
+}
+
 // TestOneFailedRepositoryContinuesWithACoverageNote researches two
 // repositories where one is not accessible.
 func TestOneFailedRepositoryContinuesWithACoverageNote(t *testing.T) {
@@ -500,6 +611,8 @@ type processHarness struct {
 	worker            *dex.Worker
 	newsletter        *techblog.TechBlogNewsletterFlow
 	subscriberList    techblog.NewsletterSubscriberListClient
+	subscriberFlow    *techblog.NewsletterSubscriberListFlow
+	subscriberFlowID  string
 	subscriberReader  *failableSubscriberReader
 	teamID            string
 	messageSequence   int
@@ -513,6 +626,13 @@ var defaultTestSubscribers = []string{"alice@example.com", "Bob@Example.com", "r
 const defaultTestAudience = 4
 
 func newProcessHarness(t *testing.T, behavior fakeGeminiBehavior) *processHarness {
+	t.Helper()
+	return newProcessHarnessWithSubscribers(t, behavior, defaultTestSubscribers)
+}
+
+// newProcessHarnessWithSubscribers seeds the harness's own subscriber list
+// with subscribers; nil leaves it empty.
+func newProcessHarnessWithSubscribers(t *testing.T, behavior fakeGeminiBehavior, subscribers []string) *processHarness {
 	t.Helper()
 	if os.Getenv("DEX_FLOW_SERVICE_ADDRESS") == "" {
 		t.Skip("DEX_FLOW_SERVICE_ADDRESS is not set; run through scripts/with-dex.sh")
@@ -548,7 +668,7 @@ func newProcessHarness(t *testing.T, behavior fakeGeminiBehavior) *processHarnes
 		_ = harness.client.Close()
 		_ = harness.cache.Close()
 	})
-	harness.seedSubscribers(defaultTestSubscribers)
+	harness.seedSubscribers(subscribers)
 	return harness
 }
 
@@ -584,8 +704,10 @@ func (harness *processHarness) newRegistry() *dex.Registry {
 	// Each harness owns its subscriber list, so tests sharing one Dex server
 	// never see each other's subscribers.
 	subscriberListFlow := techblog.NewNewsletterSubscriberListFlow(harness.configuration)
+	harness.subscriberFlow = subscriberListFlow
+	harness.subscriberFlowID = "newsletter-subscriber-list-" + harness.teamID
 	harness.subscriberList = techblog.NewNewsletterSubscriberListClient(subscriberListFlow,
-		"newsletter-subscriber-list-"+harness.teamID, func() *dex.Client { return harness.client })
+		harness.subscriberFlowID, func() *dex.Client { return harness.client })
 	if harness.subscriberReader == nil {
 		harness.subscriberReader = &failableSubscriberReader{}
 	}
@@ -741,10 +863,16 @@ func (harness *processHarness) invokeAction(ctx context.Context, flowID string, 
 
 func (harness *processHarness) skipEditorialTimer(ctx context.Context, flowID string, executionNumber int32) {
 	harness.t.Helper()
+	harness.skipTimer(ctx, flowID, "WaitForEditorialDecision", executionNumber)
+}
+
+// skipTimer fires the first Timer of one execution of a waiting Step.
+func (harness *processHarness) skipTimer(ctx context.Context, flowID string, stepType string, executionNumber int32) {
+	harness.t.Helper()
 	timerIndex := int32(0)
-	harness.waitFor(ctx, fmt.Sprintf("skip editorial Timer %d", executionNumber), func(attemptContext context.Context) bool {
+	harness.waitFor(ctx, fmt.Sprintf("skip %s Timer %d", stepType, executionNumber), func(attemptContext context.Context) bool {
 		return harness.client.SkipTimer(attemptContext, flowID,
-			dex.StepExecutionID{StepType: "WaitForEditorialDecision", ExecutionNumber: &executionNumber},
+			dex.StepExecutionID{StepType: stepType, ExecutionNumber: &executionNumber},
 			dex.TimerID{Index: &timerIndex}) == nil
 	})
 }
@@ -1227,6 +1355,14 @@ type fakeGmail struct {
 	// sends were accepted.
 	failAfterAccepted     int
 	unavailableRecipients map[string]bool
+	sendDelays            map[string]time.Duration
+}
+
+// delaySendsTo makes every send to recipient answer only after delay.
+func (provider *fakeGmail) delaySendsTo(recipient string, delay time.Duration) {
+	provider.mutex.Lock()
+	defer provider.mutex.Unlock()
+	provider.sendDelays[strings.ToLower(recipient)] = delay
 }
 
 func (provider *fakeGmail) failAuthenticationAfterAccepted(accepted int) {
@@ -1264,7 +1400,7 @@ func (provider *fakeGmail) totalAccepted() int {
 }
 
 func newFakeGmail(t *testing.T) *fakeGmail {
-	provider := &fakeGmail{sends: map[string]int{}, accepted: map[string]int{}, unavailableRecipients: map[string]bool{}}
+	provider := &fakeGmail{sends: map[string]int{}, accepted: map[string]int{}, unavailableRecipients: map[string]bool{}, sendDelays: map[string]time.Duration{}}
 	provider.Server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/users/me/messages/send" {
 			http.NotFound(writer, request)
@@ -1306,7 +1442,15 @@ func newFakeGmail(t *testing.T) *fakeGmail {
 			provider.accepted[recipient]++
 			provider.lastBody = string(raw)
 		}
+		delay := provider.sendDelays[recipient]
 		provider.mutex.Unlock()
+		if delay > 0 {
+			select {
+			case <-time.After(delay):
+			case <-request.Context().Done():
+				return
+			}
+		}
 		if authenticationFailure {
 			writeJSON(writer, http.StatusUnauthorized, map[string]any{"error": map[string]any{"code": 401, "status": "UNAUTHENTICATED", "message": "Invalid Credentials"}})
 			return

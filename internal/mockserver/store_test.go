@@ -81,6 +81,26 @@ func TestStoreFailNextIsConsumedOnce(t *testing.T) {
 	}
 }
 
+func TestStoreFullNextAnswersTheNextValidAddressOnce(t *testing.T) {
+	store := NewStore()
+	if view := store.FullNext(); !view.FullNext {
+		t.Fatalf("full-next view = %+v", view)
+	}
+	if _, err := store.Subscribe("reader@example"); !errors.Is(err, ErrInvalidEmail) {
+		t.Fatalf("an invalid address with full-next pending = %v, want ErrInvalidEmail", err)
+	}
+	if _, err := store.Subscribe("reader@example.com"); !errors.Is(err, ErrListFull) {
+		t.Fatalf("subscribe with full-next pending = %v, want ErrListFull", err)
+	}
+	if got := store.Control(); got.FullNext || len(got.Subscribers) != 0 {
+		t.Fatalf("control after the full answer = %+v", got)
+	}
+	store.FullNext()
+	if got := store.Reset(); got.FullNext {
+		t.Fatalf("reset kept full-next: %+v", got)
+	}
+}
+
 func TestStoreResetClearsSubscribersAndPendingFailure(t *testing.T) {
 	store := NewStore()
 	if _, err := store.Subscribe("reader@example.com"); err != nil {

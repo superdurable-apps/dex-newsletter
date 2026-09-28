@@ -38,7 +38,16 @@ test('shows the server message for an address without a dotted domain', async ({
   await page.getByRole('button', { name: 'Subscribe' }).click();
   await expect(page.getByRole('alert')).toHaveText('Enter a single email address, such as name@example.com.');
   await expect(email).toHaveValue('reader@example');
-  await expect(page.getByRole('status')).toHaveCount(0);
+  await expect(page.getByRole('status')).toBeEmpty();
+});
+
+test('shows the server message when the subscriber list is full', async ({ page, request }) => {
+  await page.goto('/');
+  expect((await request.post('/__mock__/control', { data: { action: 'full-next' } })).status()).toBe(200);
+  await page.getByRole('textbox', { name: 'Email' }).fill('reader@example.com');
+  await page.getByRole('button', { name: 'Subscribe' }).click();
+  await expect(page.getByRole('alert')).toHaveText('The newsletter is not accepting new subscribers right now.');
+  await expect(page.getByRole('status')).toBeEmpty();
 });
 
 test('shows the unavailable message when the subscriber list fails', async ({ page, request }) => {

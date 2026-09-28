@@ -18,8 +18,9 @@ paths:
       operationId: subscribeToNewsletter
       description: >-
         Adds one email address to the newsletter subscriber list. Subscribing an
-        address that is already on the list succeeds with the same response, so
-        the response never reveals list membership.
+        address that is already on the list succeeds with the same response,
+        and a full list answers 409 for every valid address, so no response
+        reveals list membership.
       requestBody:
         required: true
         content:
@@ -40,7 +41,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '409':
-          description: The subscriber list is full.
+          description: The subscriber list is full; answered for every valid address, subscribed or not.
           content:
             application/json:
               schema:

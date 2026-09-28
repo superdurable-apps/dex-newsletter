@@ -15,8 +15,14 @@ Readers can subscribe on the home page, but they can't leave the list yet:
   `List-Unsubscribe` header, and there is no way to remove an address. The
   released Gmail connector cannot set custom message headers yet.
 - **Confirmation:** a subscription takes effect immediately, with no
-  confirmation email (double opt-in), so anyone who can reach the page can add
-  any address. Keep the page on a trusted network until confirmation exists.
+  confirmation email (double opt-in) and no rate limit, so anyone who can reach
+  the page can add any address, and one client can fill the list to
+  `newsletter.maxRecipients`. New readers then get 409, and every approved issue
+  goes to the addresses that were added. With no removal path yet, recovering
+  means raising `newsletter.maxRecipients` (at most 2000) or deleting the Dex
+  state, which deletes every Run too. The application server listens on every
+  network interface (`:$PORT`), so keep the machine on a trusted network, or
+  block the port, until confirmation exists.
 
 Tracked in [#2](https://github.com/superdurable-apps/dex-newsletter/issues/2).
 
@@ -35,9 +41,10 @@ reader-facing control:
   `subscribeToNewsletter` (`POST /api/newsletter/subscriptions`).
 
 `subscribeToNewsletter` answers 200 with the canonical address whether it was
-new or already on the list, so it never reveals who is subscribed; 400 for an
-address that is not a single deliverable address, 409 when the list is full
-(`newsletter.maxRecipients`), and 503 when Dex cannot be reached. There are no
+new or already on the list; 400 for an address that is not a single
+deliverable address; 409 for every valid address, subscribed or not, once the
+list holds `newsletter.maxRecipients` addresses; and 503 when Dex cannot be
+reached. No status reveals who is subscribed. There are no
 approval, status, list, detail, or retry routes or controls. `make mock` runs
 the page against an in-memory mock of the OpenAPI contract and
 `make test-mock-e2e` drives it; `make test-e2e` runs the real journey against
@@ -69,8 +76,8 @@ to the same run.
    after `review.maxReminders` more intervals.
 5. **Delivery** — the run snapshots the [subscriber list](#subscribers)
    (re-validated, de-duplicated, capped at `newsletter.maxRecipients`) and sends each
-   subscriber their own Gmail message. Each send runs synchronously so it is never
-   replayed. A rejected address is recorded; an unconfirmed send is recorded as
+   subscriber their own Gmail message. Each send persists synchronously, so it is
+   repeated only if the Worker is lost mid-send (Gmail has no idempotency key). A rejected address is recorded; an unconfirmed send is recorded as
    `uncertain` and is never resent automatically. The run's Dex Web detail view lists
    every rejected, unconfirmed, or failed recipient under **Recipients to check before
    resending**, and the thread gets a delivery report with counts only.
@@ -96,13 +103,17 @@ the only way in:
 
 - `AddNewsletterSubscriber`, called by `subscribeToNewsletter`, trims the
   address, applies the address policy (a single bare ASCII addr-spec with a
-  dotted domain), lowercases it, and appends it unless it is already there or
-  the list holds `newsletter.maxRecipients` addresses. It locks the list, so
+  dotted domain), lowercases it, and appends it unless the list already holds
+  `newsletter.maxRecipients` addresses or the address. It locks the list, so
   concurrent subscriptions serialize.
 - `ListNewsletterSubscribers` returns a snapshot; `LoadNewsletterSubscribers`
   in each `TechBlogNewsletterFlow` run calls it from `Execute` after approval.
-  A failed read is retried for about ten minutes, then the run holds for
-  attention at `load-subscribers`.
+  It takes the same lock, which needs an open list. A failed read is retried
+  for about ten minutes, then the run holds for attention at
+  `load-subscribers`.
+
+The application starts the list with a constant request ID, so every restart
+finds the existing list and the Slack Trigger starts either way.
 
 Open the `newsletter-subscriber-list` run in Dex Web to see the count and the
 addresses. Don't stop it: a stopped list rejects subscriptions (503) and holds

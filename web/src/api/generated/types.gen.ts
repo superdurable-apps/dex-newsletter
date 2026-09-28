@@ -54,7 +54,7 @@ export type SubscribeToNewsletterErrors = {
      */
     400: Error;
     /**
-     * The subscriber list is full.
+     * The subscriber list is full; answered for every valid address, subscribed or not.
      */
     409: Error;
     /**

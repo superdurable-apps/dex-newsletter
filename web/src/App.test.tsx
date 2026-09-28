@@ -85,6 +85,28 @@ describe('App', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
+  it('keeps an address the reader edits while the request runs', async () => {
+    let finish: (value: unknown) => void = () => {};
+    api.subscribeToNewsletter.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    await renderReady();
+    submitEmail('typo@example.com');
+    fireEvent.change(screen.getByRole('textbox', { name: 'Email' }), { target: { value: 'fixed@example.com' } });
+    finish({ data: { email: 'typo@example.com' } });
+    expect(await screen.findByRole('status')).toHaveTextContent('Subscribed as typo@example.com.');
+    expect(screen.getByRole('textbox', { name: 'Email' })).toHaveValue('fixed@example.com');
+  });
+
+  it('shows the server message when the list is full', async () => {
+    api.subscribeToNewsletter.mockResolvedValue({
+      error: { error: 'subscriber_list_full', message: 'The newsletter is not accepting new subscribers right now.' },
+      response: { status: 409 },
+    });
+    await renderReady();
+    submitEmail('reader@example.com');
+    expect(await screen.findByRole('alert')).toHaveTextContent('The newsletter is not accepting new subscribers right now.');
+    expect(screen.getByRole('status')).toBeEmptyDOMElement();
+  });
+
   it('shows the server message for a rejected address', async () => {
     api.subscribeToNewsletter.mockResolvedValue({
       error: { error: 'invalid_email', message: 'Enter a single email address, such as name@example.com.' },
@@ -94,7 +116,7 @@ describe('App', () => {
     submitEmail('reader@example');
     expect(await screen.findByRole('alert')).toHaveTextContent('Enter a single email address, such as name@example.com.');
     expect(screen.getByRole('textbox', { name: 'Email' })).toHaveValue('reader@example');
-    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toBeEmptyDOMElement();
   });
 
   it('shows the generic message when the request never reaches the server', async () => {
@@ -114,7 +136,7 @@ describe('App', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(unavailable);
   });
 
-  it('disables Subscribe while the request is pending and clears the previous message on a new submit', async () => {
+  it('marks Subscribe unavailable while the request is pending and clears the previous message on a new submit', async () => {
     api.subscribeToNewsletter.mockResolvedValueOnce({
       error: { error: 'unavailable', message: unavailable },
       response: { status: 503 },
@@ -126,7 +148,9 @@ describe('App', () => {
     let finish: (value: unknown) => void = () => {};
     api.subscribeToNewsletter.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
     fireEvent.click(screen.getByRole('button', { name: 'Subscribe' }));
-    expect(screen.getByRole('button', { name: 'Subscribe' })).toBeDisabled();
+    // aria-disabled rather than disabled, so keyboard focus stays on the button.
+    expect(screen.getByRole('button', { name: 'Subscribe' })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('button', { name: 'Subscribe' })).toBeEnabled();
     expect(screen.getByRole('form', { name: 'Newsletter subscription' })).toHaveAttribute('aria-busy', 'true');
     expect(screen.getByRole('textbox', { name: 'Email' })).toHaveValue('reader@example.com');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
@@ -136,7 +160,7 @@ describe('App', () => {
 
     finish({ data: { email: 'reader@example.com' } });
     expect(await screen.findByRole('status')).toHaveTextContent('Subscribed as reader@example.com.');
-    expect(screen.getByRole('button', { name: 'Subscribe' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Subscribe' })).toHaveAttribute('aria-disabled', 'false');
     expect(screen.getByRole('form', { name: 'Newsletter subscription' })).toHaveAttribute('aria-busy', 'false');
   });
 });
