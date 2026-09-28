@@ -1,12 +1,15 @@
 /bin/
 /tmp/
 /.local/
+/internal/api/generated/
 /web/dist/
 /web/node_modules/
 /web/playwright-report/
+/web/src/api/generated/
 /web/test-results/
 *.log
 __pycache__/
+.DS_STORE
 
 # Local connector development overrides (never commit)
 go.work

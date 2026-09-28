@@ -31,17 +31,6 @@ func TestHTTPServerBoundsSlowClients(t *testing.T) {
 	}
 }
 
-func TestApplicationHandlerHasNoMockControls(t *testing.T) {
-	handler := applicationHandler(http.NotFoundHandler())
-	for _, method := range []string{http.MethodGet, http.MethodPost} {
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, httptest.NewRequest(method, "/__mock__/control", strings.NewReader(`{"action":"reset"}`)))
-		if response.Code != http.StatusNotFound {
-			t.Errorf("%s /__mock__/control status = %d, want %d", method, response.Code, http.StatusNotFound)
-		}
-	}
-}
-
 func TestApplicationHandlerBoundsAPIRequestBodies(t *testing.T) {
 	var readErr error
 	handler := applicationHandler(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {

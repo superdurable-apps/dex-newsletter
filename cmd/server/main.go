@@ -76,8 +76,6 @@ func newHTTPServer(address string, handler http.Handler) *http.Server {
 func applicationHandler(apiHandler http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/api/", http.MaxBytesHandler(apiHandler, maximumAPIRequestBytes))
-	// Mock controls exist only on the mock server (make mock).
-	mux.Handle("/__mock__/", http.NotFoundHandler())
 	mux.Handle("/", staticHandler("web/dist"))
 	return mux
 }
