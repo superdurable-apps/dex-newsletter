@@ -66,7 +66,19 @@ commit a `go.work`, local `replace`, branch, or pseudo-version. The isolated
 
 Stable commands are `make bootstrap`, `make generate`, `make check-generated`,
 `make check-fdg-v2`, `make test-unit`, `make test-integration`,
-`make test-e2e`, `make build`, `make dev`, and `make check`.
+`make test-e2e`, `make test-mock-e2e`, `make build`, `make dev`, `make mock`,
+and `make check`.
+
+`make mock` (`scripts/with-mock.sh`) starts the Go in-memory mock API and Vite
+HMR without Dex on `MOCK_WEB_PORT` (default `8080`) and `MOCK_API_PORT`
+(default `18081`). The mock is a contract test double: `cmd/mock-server` and
+`internal/mockserver` implement the generated server interface, import only
+`internal/api/generated` from this module, and never reach the Flows, the
+runtime, or a provider. `/__mock__/control` accepts `reset` and `fail-next`
+(the next subscribe answers 503); the page has no mock controls.
+`make test-mock-e2e` runs `web/e2e/mock-newsletter-subscription.spec.ts`
+against it on free ports. Mock verification does not replace the real Dex
+integration and E2E tests.
 
 `make dev` (`scripts/dev.sh`) is `make dev-dex` (Dex Server + Dex Web in the
 foreground) plus `make dev-app` (build the page and server binary, run it

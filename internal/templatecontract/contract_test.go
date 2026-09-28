@@ -3,11 +3,14 @@ package templatecontract_test
 import (
 	"encoding/json"
 	"errors"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -60,8 +63,10 @@ func TestTemplateContract(t *testing.T) {
 		"testUnit":        "make test-unit",
 		"testIntegration": "make test-integration",
 		"testE2E":         "make test-e2e",
+		"testMockE2E":     "make test-mock-e2e",
 		"build":           "make build",
 		"dev":             "make dev",
+		"mock":            "make mock",
 		"check":           "make check",
 	}
 	if !reflect.DeepEqual(contract.Commands, wantCommands) {
@@ -114,31 +119,63 @@ func TestTemplateContract(t *testing.T) {
 	}
 }
 
-// TestNoCustomUIShell keeps the product in the dex-app-builder "No custom UI"
-// mode: Dex Web v2 is the only process-management surface.
-func TestNoCustomUIShell(t *testing.T) {
+// TestCustomUIScope keeps the confirmed Custom UI scope: the page adds only
+// the newsletter subscription form, Dex Web v2 remains the only
+// process-management surface, and the mock server is a contract test double
+// for exactly the two application operations.
+func TestCustomUIScope(t *testing.T) {
 	root := filepath.Clean(filepath.Join("..", ".."))
-	for _, removed := range []string{
-		"cmd/mock-server",
-		"internal/mockserver",
-		"internal/process",
-		"scripts/with-mock.sh",
-		"scripts/run-mock-e2e.sh",
-		"docs/local-mock.md",
-		"web/src/MockControls.tsx",
-		"web/e2e/mock-basic-process.spec.ts",
-	} {
+	spec := readFile(t, filepath.Join(root, "openapi", "openapi.yaml"))
+	operations := regexp.MustCompile(`(?m)^\s*operationId:\s*(\S+)\s*$`).FindAllStringSubmatch(spec, -1)
+	var operationIDs []string
+	for _, operation := range operations {
+		operationIDs = append(operationIDs, operation[1])
+	}
+	if want := []string{"getApplicationInfo", "subscribeToNewsletter"}; !reflect.DeepEqual(operationIDs, want) || strings.Count(spec, "operationId:") != len(want) {
+		t.Errorf("OpenAPI operations = %v, want exactly %v", operationIDs, want)
+	}
+	for _, required := range []string{"cmd/mock-server", "internal/mockserver", "scripts/with-mock.sh", "scripts/run-mock-e2e.sh"} {
+		if _, err := os.Stat(filepath.Join(root, required)); err != nil {
+			t.Errorf("mock contract test double %q must exist: %v", required, err)
+		}
+	}
+	for _, removed := range []string{"internal/process", "docs/local-mock.md", "web/src/MockControls.tsx"} {
 		if _, err := os.Stat(filepath.Join(root, removed)); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("custom process-management surface %q must not exist (stat error: %v)", removed, err)
 		}
 	}
-	spec := readFile(t, filepath.Join(root, "openapi", "openapi.yaml"))
-	if count := strings.Count(spec, "operationId:"); count != 1 || !strings.Contains(spec, "operationId: getApplicationInfo") {
-		t.Errorf("OpenAPI must define only getApplicationInfo; found %d operations", count)
+	makefile := readFile(t, filepath.Join(root, "Makefile"))
+	for _, target := range []string{"mock", "test-mock-e2e"} {
+		if !strings.Contains(makefile, "\n"+target+":") {
+			t.Errorf("Makefile does not define %q", target)
+		}
 	}
-	for _, path := range []string{"Makefile", "AGENTS.md", "README.md", ".superverse/template.json"} {
-		if contents := readFile(t, filepath.Join(root, path)); strings.Contains(contents, "make mock") || strings.Contains(contents, "test-mock-e2e") {
-			t.Errorf("%s still references the removed mock workflow", path)
+
+	// The mock implements the generated contract only; it never reaches the
+	// Flows, the runtime, or a provider.
+	module := regexp.MustCompile(`(?m)^module\s+(\S+)`).FindStringSubmatch(readFile(t, filepath.Join(root, "go.mod")))
+	if module == nil {
+		t.Fatal("go.mod does not declare a module path")
+	}
+	allowed := map[string]bool{module[1] + "/internal/api/generated": true, module[1] + "/internal/mockserver": true}
+	for _, directory := range []string{"cmd/mock-server", "internal/mockserver"} {
+		files, err := filepath.Glob(filepath.Join(root, directory, "*.go"))
+		if err != nil || len(files) == 0 {
+			t.Errorf("no Go files in %s (error: %v)", directory, err)
+			continue
+		}
+		for _, file := range files {
+			parsed, err := parser.ParseFile(token.NewFileSet(), file, nil, parser.ImportsOnly)
+			if err != nil {
+				t.Errorf("parse %s: %v", file, err)
+				continue
+			}
+			for _, imported := range parsed.Imports {
+				path, _ := strconv.Unquote(imported.Path.Value)
+				if (path == module[1] || strings.HasPrefix(path, module[1]+"/")) && !allowed[path] {
+					t.Errorf("%s imports %s; the mock may import only internal/api/generated from this module", file, path)
+				}
+			}
 		}
 	}
 }
