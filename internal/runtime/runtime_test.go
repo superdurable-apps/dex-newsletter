@@ -644,7 +644,7 @@ func TestPointsAtThisMachine(t *testing.T) {
 		"http://localhost:8080/":         true,
 		"http://app.localhost/":          true,
 		"http://[::1]:8080/":             true,
-		"https://news.superdurable.io/":  false,
+		"https://news.example.com/":      false,
 		"http://192.168.1.20:8080/":      false,
 		"https://127.0.0.1.example.com/": false,
 	} {
