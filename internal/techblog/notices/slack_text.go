@@ -432,18 +432,19 @@ func slackLink(rawURL string, escapedLabel string) string {
 }
 
 // dexWebRunURL builds the Dex Web v2 run page URL for runReference. It reports
-// false when either field is blank, the Flow ID is too long to link, or the
-// base URL carries a query or fragment that the run path cannot follow.
+// false when any field is blank, the Flow ID is too long to link, or the base
+// URL carries a query or fragment that the run path cannot follow.
 func dexWebRunURL(runReference RunReference) (string, bool) {
 	baseURL := strings.TrimRight(strings.TrimSpace(runReference.DexWebURL), "/")
+	flowType := strings.TrimSpace(runReference.FlowType)
 	flowID := runReference.FlowID
-	if baseURL == "" || strings.TrimSpace(flowID) == "" || len(flowID) > maximumLinkedFlowIDBytes {
+	if baseURL == "" || flowType == "" || strings.TrimSpace(flowID) == "" || len(flowID) > maximumLinkedFlowIDBytes {
 		return "", false
 	}
 	if strings.ContainsAny(baseURL, "?#") {
 		return "", false
 	}
-	return baseURL + "/v2/runs/" + url.PathEscape(flowID), true
+	return baseURL + "/v2/run/" + url.PathEscape(flowType) + "/" + url.PathEscape(flowID), true
 }
 
 // runReferenceMarkup returns a Dex Web link labeled with the static label when

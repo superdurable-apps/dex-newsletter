@@ -1273,8 +1273,11 @@ type WaitForEditorialDecision struct {
 // GetStepType returns the stable unqualified Step type that Dex Web uses.
 func (WaitForEditorialDecision) GetStepType() string { return "WaitForEditorialDecision" }
 
-// GetStepOptions serializes Execute with the editorial Actions, so an Action
-// that overlaps expiry is either applied or rejected, never silently lost.
+// GetStepOptions serializes Execute with editorial Actions invoked through the
+// Go Client, so such an Action that overlaps expiry is either applied or
+// rejected. Dex Web v0.14.0 sends Actions without their locks
+// (superdurable/dex#562); one that lands during the final expiry Execute
+// reports success and is then dropped.
 func (WaitForEditorialDecision) GetStepOptions() *dex.StepOptions {
 	return &dex.StepOptions{ExecuteLockAttributes: []dex.AttributeLock{
 		dex.LockAttribute(requestStatus), dex.LockAttribute(reviewGateKey),
@@ -1610,7 +1613,10 @@ type WaitForOperatorRecovery struct {
 // GetStepType returns the stable unqualified Step type that Dex Web uses.
 func (WaitForOperatorRecovery) GetStepType() string { return "WaitForOperatorRecovery" }
 
-// GetStepOptions serializes Execute with the recovery Actions.
+// GetStepOptions serializes Execute with recovery Actions invoked through the
+// Go Client. Dex Web v0.14.0 sends Actions without their locks
+// (superdurable/dex#562), so one that lands during the final expiry Execute
+// reports success and is then dropped.
 func (WaitForOperatorRecovery) GetStepOptions() *dex.StepOptions {
 	return &dex.StepOptions{ExecuteLockAttributes: []dex.AttributeLock{
 		dex.LockAttribute(requestStatus), dex.LockAttribute(attentionGateKey),
@@ -2002,7 +2008,7 @@ func (stages *newsletterStages) recordAbandonment(ctx dex.Context, stage string,
 }
 
 func (stages *newsletterStages) runReference(ctx dex.Context) notices.RunReference {
-	return notices.RunReference{FlowID: ctx.FlowID(), DexWebURL: stages.configuration.DexWebURL}
+	return notices.RunReference{FlowType: TechBlogNewsletterFlowType, FlowID: ctx.FlowID(), DexWebURL: stages.configuration.DexWebURL}
 }
 
 func (stages *newsletterStages) recordDeliveryAttention(ctx dex.Context, reason string) (SlackThreadReply, error) {

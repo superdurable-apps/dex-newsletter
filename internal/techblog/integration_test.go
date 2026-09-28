@@ -542,8 +542,6 @@ func TestUnsubscribeLinkRemovesTheReaderFromLaterIssues(t *testing.T) {
 	}
 }
 
-// TestEmptySubscriberListClosesWithoutSending approves an issue while nobody
-// has subscribed yet, the list's initial state.
 // TestDexWebShowsTheFirstDeliveryExceptions delivers to more rejected
 // subscribers than the display shows: Dex Web lists the first ones in
 // delivery order, and the AttributeMap still records every exception.
@@ -588,6 +586,28 @@ func TestDexWebShowsTheFirstDeliveryExceptions(t *testing.T) {
 	}
 }
 
+// TestWorkQueueFindsTheRunUnderNewsletterManage checks the permission Dex Web's
+// Work Queue searches: a run waiting for review is found under the one editor
+// permission, not under the per-Action names it replaced, and stays found
+// after it closes.
+func TestWorkQueueFindsTheRunUnderNewsletterManage(t *testing.T) {
+	ctx := integrationContext(t, 2*time.Minute)
+	harness := newProcessHarnessWithSubscribers(t, fakeGeminiBehavior{understood: true, hasNotableChanges: true}, nil)
+	flowID := harness.deliverSlackRequest(ctx, "Blog about connectors", 1)
+	harness.waitForStatus(ctx, flowID, techblog.StatusAwaitingEditorReview)
+	harness.waitForWorkQueue(ctx, flowID, techblog.PermissionManageNewsletter)
+	if harness.inWorkQueue(ctx, flowID, "newsletter.approve") {
+		t.Fatal("the run is found under the removed newsletter.approve permission")
+	}
+	harness.approveCurrentDraft(ctx, flowID)
+	if result := harness.waitForResult(ctx, flowID); result.Status != techblog.StatusNoSubscribers {
+		t.Fatalf("result = %+v, want %s", result, techblog.StatusNoSubscribers)
+	}
+	harness.waitForWorkQueue(ctx, flowID, techblog.PermissionManageNewsletter)
+}
+
+// TestEmptySubscriberListClosesWithoutSending approves an issue while nobody
+// has subscribed yet, the list's initial state.
 func TestEmptySubscriberListClosesWithoutSending(t *testing.T) {
 	ctx := integrationContext(t, 2*time.Minute)
 	harness := newProcessHarnessWithSubscribers(t, fakeGeminiBehavior{understood: true, hasNotableChanges: true}, nil)
@@ -946,33 +966,118 @@ func (harness *processHarness) deliverSlackRequest(ctx context.Context, text str
 }
 
 // display returns the run's Display. It first invokes the Summary and Display
-// RPCs the way Dex Web does, so every state a test reaches proves Dex Web can
+// RPCs the way Dex Web does and checks each output against the view's declared
+// fields as Dex Web does, so every state a test reaches proves Dex Web can
 // render the run (and therefore its Actions).
 func (harness *processHarness) display(ctx context.Context, flowID string) (map[string]any, error) {
-	for _, rpcName := range []string{"GetDexSummary", "GetDexDisplay"} {
-		if err := harness.invokeAsDexWeb(ctx, flowID, rpcName); err != nil {
-			harness.lastWaitError = fmt.Errorf("%s as Dex Web invokes it: %w", rpcName, err)
+	views := []struct {
+		rpcName string
+		rpc     any
+	}{{"GetDexSummary", harness.newsletter.GetDexSummary}, {"GetDexDisplay", harness.newsletter.GetDexDisplay}}
+	var output map[string]any
+	for _, view := range views {
+		if err := harness.invokeAsDexWeb(ctx, flowID, view.rpcName); err != nil {
+			harness.lastWaitError = fmt.Errorf("%s as Dex Web invokes it: %w", view.rpcName, err)
 			return nil, harness.lastWaitError
 		}
+		output = nil
+		if err := harness.client.InvokeRPC(ctx, flowID, view.rpc, nil, &output); err != nil {
+			harness.lastWaitError = err
+			return nil, err
+		}
+		if err := validateDexWebView(view.rpcName, declaredViewFields(harness.t, view.rpcName), output); err != nil {
+			harness.t.Fatalf("Dex Web would reject the output: %v", err)
+		}
 	}
-	var output map[string]any
-	err := harness.client.InvokeRPC(ctx, flowID, harness.newsletter.GetDexDisplay, nil, &output)
+	return output, nil
+}
+
+// viewField is one `dex:field` directive of a Summary or Display RPC.
+type viewField struct{ attributeKey, valueType string }
+
+var dexFieldDirective = regexp.MustCompile(`^// dex:field attribute-key:(\S+) value-type:(\S+)`)
+
+// declaredViewFields reads the `dex:field` directives above rpcName in the
+// Flow source, which FDG 2.0 turns into the view contract Dex Web enforces.
+func declaredViewFields(t *testing.T, rpcName string) []viewField {
+	t.Helper()
+	source, err := os.ReadFile("tech_blog_newsletter_flow.go")
 	if err != nil {
-		harness.lastWaitError = err
+		t.Fatalf("read the Flow source: %v", err)
 	}
-	return output, err
+	var fields []viewField
+	for _, line := range strings.Split(string(source), "\n") {
+		if match := dexFieldDirective.FindStringSubmatch(line); match != nil {
+			fields = append(fields, viewField{attributeKey: match[1], valueType: match[2]})
+			continue
+		}
+		if strings.Contains(line, ") "+rpcName+"(") && len(fields) > 0 {
+			return fields
+		}
+		if !strings.HasPrefix(line, "//") {
+			fields = nil
+		}
+	}
+	t.Fatalf("no dex:field directives precede %s", rpcName)
+	return nil
+}
+
+// validateDexWebView applies the check Dex Web v0.14.0 makes before it shows
+// a view (web/api/v2.go validateViewOutput): exactly the declared fields, and
+// each non-null value of its declared type.
+func validateDexWebView(rpcName string, fields []viewField, values map[string]any) error {
+	if len(values) != len(fields) {
+		return fmt.Errorf("%s returned %d fields; its directives declare %d", rpcName, len(values), len(fields))
+	}
+	for _, field := range fields {
+		value, exists := values[field.attributeKey]
+		if !exists {
+			return fmt.Errorf("%s omitted declared field %q", rpcName, field.attributeKey)
+		}
+		if value != nil && !matchesDexWebValueType(value, field.valueType) {
+			return fmt.Errorf("%s field %q = %#v does not match %s", rpcName, field.attributeKey, value, field.valueType)
+		}
+	}
+	return nil
+}
+
+func matchesDexWebValueType(value any, valueType string) bool {
+	switch valueType {
+	case "string":
+		_, ok := value.(string)
+		return ok
+	case "int64":
+		number, ok := value.(float64)
+		return ok && number == float64(int64(number))
+	case "double":
+		_, ok := value.(float64)
+		return ok
+	case "bool":
+		_, ok := value.(bool)
+		return ok
+	case "object", "attribute-map":
+		_, ok := value.(map[string]any)
+		return ok
+	case "array":
+		_, ok := value.([]any)
+		return ok
+	case "json":
+		return true
+	default:
+		return false
+	}
 }
 
 // invokeAsDexWeb invokes a view RPC as Dex Web v0.14.0 does (web/api/v2.go
-// invokeView): by name, with a null input and no AttributeMap or Channel
-// loads. The typed Client adds an RPC's registered loads itself, so only this
+// invokeView): by name, with a null input, a 5-second timeout, and no
+// AttributeMap or Channel loads. The typed Client adds an RPC's registered loads itself, so only this
 // call catches a Summary or Display RPC that Dex Web cannot render.
 func (harness *processHarness) invokeAsDexWeb(ctx context.Context, flowID string, rpcName string) error {
 	harness.messageSequence++
 	_, err := harness.flowService.InvokeRPC(ctx, &dexpb.InvokeRPCRequest{
 		FlowId: flowID, RpcName: rpcName,
 		Input:          &dexpb.Value{Kind: &dexpb.Value_NullValue{NullValue: structpb.NullValue_NULL_VALUE}},
-		TimeoutSeconds: 30, RequestId: fmt.Sprintf("%s-dex-web-%s-%d", harness.teamID, rpcName, harness.messageSequence),
+		TimeoutSeconds: 5, RequestId: fmt.Sprintf("%s-dex-web-%s-%d", harness.teamID, rpcName, harness.messageSequence),
 	})
 	return err
 }
@@ -1003,6 +1108,38 @@ func (harness *processHarness) waitForReviewGate(ctx context.Context, flowID str
 		return current["newsletter-request-status"] == techblog.StatusAwaitingEditorReview && current["review-gate-key"] == gateKey
 	})
 	return display
+}
+
+// waitForWorkQueue waits until Dex Web's Work Queue query for permission
+// finds the run; search visibility is eventually consistent.
+func (harness *processHarness) waitForWorkQueue(ctx context.Context, flowID string, permission string) {
+	harness.t.Helper()
+	harness.waitFor(ctx, "Work Queue permission "+permission, func(attemptContext context.Context) bool {
+		return harness.inWorkQueue(attemptContext, flowID, permission)
+	})
+}
+
+// inWorkQueue runs the query Dex Web v0.14.0 compiles for one Working as
+// permission (web/api/v2.go compileV2Query) and reports whether it finds the run.
+func (harness *processHarness) inWorkQueue(ctx context.Context, flowID string, permission string) bool {
+	query := fmt.Sprintf("FlowType = '%s' AND DexWorkQueuePermissions = '%s'", techblog.TechBlogNewsletterFlowType, permission)
+	pageToken := ""
+	for {
+		page, err := harness.client.SearchFlows(ctx, query, 100, pageToken)
+		if err != nil {
+			harness.lastWaitError = err
+			return false
+		}
+		for _, flow := range page.Flows {
+			if flow.FlowID == flowID {
+				return true
+			}
+		}
+		if page.NextPageToken == "" {
+			return false
+		}
+		pageToken = page.NextPageToken
+	}
 }
 
 func (harness *processHarness) waitForResult(ctx context.Context, flowID string) techblog.NewsletterResult {
@@ -1045,6 +1182,7 @@ func (harness *processHarness) skipTimer(ctx context.Context, flowID string, ste
 
 func (harness *processHarness) waitFor(ctx context.Context, description string, condition func(context.Context) bool) {
 	harness.t.Helper()
+	harness.lastWaitError = nil
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
