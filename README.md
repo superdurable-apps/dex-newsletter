@@ -29,14 +29,17 @@ Tracked in [#2](https://github.com/superdurable-apps/dex-newsletter/issues/2).
 ## UI mode: Custom UI (subscription form only)
 
 Dex Web v2 is still the complete process-management surface: Runs, Work Queue,
-search, details, edits, and Actions. The application adds exactly one
-reader-facing control:
+search, details, edits, and Actions. The one Dex Web v2 capability gap is a
+participant portal: newsletter readers are not Dex Web operators, and Dex Web
+runs behind the operators' trusted authentication, so readers need their own
+page to subscribe. The application adds exactly one reader-facing control:
 
 - the home page shows the application name, an **Open Dex Web** link, and a
   newsletter subscription form with one **Email** field and a **Subscribe**
   button;
 - the Go HTTP server serves the page and the API;
-- two OpenAPI operations with their generated Go server and TypeScript client:
+- two OpenAPI operations with their locally generated Go server and TypeScript
+  client:
   `getApplicationInfo` (`GET /api/application-info`) and
   `subscribeToNewsletter` (`POST /api/newsletter/subscriptions`).
 
@@ -45,10 +48,10 @@ new or already on the list; 400 for an address that is not a single
 deliverable address; 409 for every valid address, subscribed or not, once the
 list holds `newsletter.maxRecipients` addresses; and 503 when Dex cannot be
 reached. No status reveals who is subscribed. There are no
-approval, status, list, detail, or retry routes or controls. `make mock` runs
-the page against an in-memory mock of the OpenAPI contract and
-`make test-mock-e2e` drives it; `make test-e2e` runs the real journey against
-Dex. Slack ingress is a Dex Connector Trigger, not an application webhook.
+approval, status, list, detail, or retry routes or controls. Component tests
+mock the generated client for states that are hard to trigger; `make test-e2e`
+runs the real journey against Dex. Slack ingress is a Dex Connector Trigger,
+not an application webhook.
 
 ## Process
 
@@ -192,10 +195,10 @@ rejected with a message naming those fields; delete them.
   once by hand with `(cd web && npx playwright install chromium)`.
   `make bootstrap` installs the npm packages but no browser; CI installs
   Chromium itself.
-- Dex CLI `v0.13.8` (`DEX_CLI_BASELINE`), which embeds Dex Web v2. The Homebrew
+- Dex CLI `v0.14.0` (`DEX_CLI_BASELINE`), which embeds Dex Web v2. The Homebrew
   `dexcli` may be older; point `DEXCLI` at the pinned binary.
-- Dex Server `server/v0.13.2` (`DEX_SERVER_BASELINE`) and Dex Go SDK `v0.13.1`
-  (`go.mod`), the pins of basic-process template `v1.6.1`.
+- Dex Server `server/v0.14.0` (`DEX_SERVER_BASELINE`) and Dex Go SDK `v0.13.1`
+  (`go.mod`), the pins of basic-process template `v1.7.1`.
 
 | Variable | Purpose |
 | --- | --- |
@@ -206,7 +209,7 @@ rejected with a message naming those fields; delete them.
 ## Start locally
 
 ```bash
-export DEXCLI="$HOME/.local/dexcli/v0.13.8/dexcli"
+export DEXCLI="$HOME/.local/dexcli/v0.14.0/dexcli"
 export TECH_BLOG_CONFIG_FILE=/absolute/path/to/tech-blog.json   # optional
 make bootstrap
 
@@ -456,17 +459,18 @@ Backups hold the same plaintext credentials; delete them when you are done.
 
 ## Contract and generated code
 
-`openapi/openapi.yaml` is authoritative. Ogen creates the Go server contract in
-`internal/api/generated`; Hey API creates the TypeScript client in
-`web/src/api/generated`.
+`openapi/openapi.yaml` is authoritative. `make generate`
+(`scripts/generate-openapi.sh`) runs Ogen for the Go server contract in
+`internal/api/generated` and Hey API for the TypeScript client in
+`web/src/api/generated`, writing both to a temporary directory first so a
+failed run leaves the previous outputs intact. Both directories are ignored
+local build outputs: they are never committed, and every build, test, and dev
+target regenerates them. Never edit them by hand.
 
 ```bash
 make generate
-make check-generated
 make check-fdg-v2
 ```
-
-Generated files are committed. Never edit them manually.
 
 ## Verification
 
@@ -494,8 +498,9 @@ exit stops that process and waits for it, so no server is left running. The
 Playwright suite loads the production page, asserts that the application name
 and the subscription form (one Email field, one Subscribe button) render,
 subscribes a fresh address through the real Dex subscriber list, and checks
-that the removed `/api/flows` management routes return 404. `make
-test-mock-e2e` runs the same page against the in-memory mock server.
+that the removed `/api/flows` management routes return 404. There is no
+application mock server: component tests mock the generated client, and mock
+evidence never replaces the real Dex and application journey.
 
 `make check-fdg-v2` validates every `internal/techblog/*_flow.go` file with
 rendering schema 2.0 and requires a diagnostic-free graph with `valid: true`.

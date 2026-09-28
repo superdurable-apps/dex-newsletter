@@ -1,22 +1,19 @@
 {
   "schemaVersion": 1,
   "buildProfile": "go-react-v1",
-  "templateVersion": "1.6.1",
+  "templateVersion": "1.7.1",
   "minimumSandboxImageContractRevision": 3,
   "openapiSpec": "openapi/openapi.yaml",
   "agentInstructions": "AGENTS.md",
   "commands": {
     "bootstrap": "make bootstrap",
     "generate": "make generate",
-    "checkGenerated": "make check-generated",
     "checkFdgV2": "make check-fdg-v2",
     "testUnit": "make test-unit",
     "testIntegration": "make test-integration",
     "testE2E": "make test-e2e",
-    "testMockE2E": "make test-mock-e2e",
     "build": "make build",
     "dev": "make dev",
-    "mock": "make mock",
     "check": "make check"
   }
 }

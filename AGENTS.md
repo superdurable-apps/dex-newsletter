@@ -15,7 +15,9 @@ or initialize a project-local copy.
 
 ## UI mode: Custom UI (subscription form only)
 
-The confirmed UI mode is **Custom UI**, limited to one reader-facing control:
+The confirmed UI mode is **Custom UI**. Its recorded Dex Web v2 capability gap
+is a participant portal: newsletter readers are not Dex Web operators, so they
+need their own page. It is limited to one reader-facing control:
 the home page shows the application name, a link to Dex Web, and a newsletter
 subscription form with exactly one Email input and one Subscribe button. The
 user confirmed that page, field, and action; keep it intentionally minimal (no
@@ -36,7 +38,7 @@ an application HTTP webhook. The page reuses the template's `.panel`, `label`,
 operations: `getApplicationInfo` (`GET /api/application-info`) and
 `subscribeToNewsletter` (`POST /api/newsletter/subscriptions`). Never edit
 files below `internal/api/generated` or `web/src/api/generated` by hand.
-Change the spec, run `make generate`, and update server, UI, mock server, and
+Change the spec, run `make generate`, and update server, UI, and
 E2E coverage in the same change. `internal/api` implements those operations
 plus JSON 404/405 responses; the browser calls only the generated client and
 never Dex. `subscribeToNewsletter` answers the same 200 for a new and an
@@ -73,28 +75,23 @@ commit a `go.work`, local `replace`, branch, or pseudo-version. The isolated
 
 | Variable | Purpose |
 | --- | --- |
-| `DEXCLI` | Dex CLI binary used by `make check-fdg-v2`, `make test-integration`, `make test-e2e`, `make dev`, and `make dev-dex`. Defaults to `dexcli` on `PATH`. The scripts fail fast unless `$DEXCLI version` reports the release pinned in `DEX_CLI_BASELINE`. A project-local copy may live at `$HOME/.local/dexcli/v0.13.8/dexcli`. |
+| `DEXCLI` | Dex CLI binary used by `make check-fdg-v2`, `make test-integration`, `make test-e2e`, `make dev`, and `make dev-dex`. Defaults to `dexcli` on `PATH`. The scripts fail fast unless `$DEXCLI version` reports the release pinned in `DEX_CLI_BASELINE`. A project-local copy may live at `$HOME/.local/dexcli/v0.14.0/dexcli`. |
 | `DEX_CONNECTOR_CONFIG_FILE` | Absolute path of the local connector connection store shown by Dex Web (default `~/.dex/connectors/connections.json`). It holds plaintext development credentials: never commit, log, or copy it into Flow state. |
 | `TECH_BLOG_CONFIG_FILE` | Path of the non-secret process configuration JSON (application name, Dex Web URL, model, research, blog, newsletter, and review settings). `make dev` and `make dev-dex` run Dex Web on dexcli's default port `8802` to match the default `dexWebUrl`; keep them in sync if you override `DEX_DEV_WEB_PORT`. |
 
 ## Commands and verification
 
-Stable commands are `make bootstrap`, `make generate`, `make check-generated`,
-`make check-fdg-v2`, `make test-unit`, `make test-integration`,
-`make test-e2e`, `make test-mock-e2e`, `make build`, `make dev`, `make mock`,
-and `make check`.
-
-`make mock` (`scripts/with-mock.sh`) starts the Go in-memory mock API and Vite
-HMR without Dex on `MOCK_WEB_PORT` (default `8080`) and `MOCK_API_PORT`
-(default `18081`). The mock is a contract test double: `cmd/mock-server` and
-`internal/mockserver` implement the generated server interface, import only
-`internal/api/generated` from this module, and never reach the Flows, the
-runtime, or a provider. `/__mock__/control` accepts `reset`, `fail-next`
-(the next subscribe answers 503), and `full-next` (the next valid subscribe
-answers 409); the page has no mock controls.
-`make test-mock-e2e` runs `web/e2e/mock-newsletter-subscription.spec.ts`
-against it on free ports. Mock verification does not replace the real Dex
-integration and E2E tests.
+Stable commands are `make bootstrap`, `make generate`, `make check-fdg-v2`,
+`make test-unit`, `make test-integration`, `make test-e2e`, `make build`,
+`make dev`, and `make check`. Build, test, and dev targets regenerate the
+OpenAPI outputs first; `make check` generates once. `internal/api/generated`
+and `web/src/api/generated` are ignored local build outputs: never stage or
+commit them. Do not restore `make check-generated`, `make mock`, or
+`make test-mock-e2e`, and do not add an application mock server, product mock
+routes, or Mock Controls. Use component-level mocks of the generated client
+for hard-to-trigger UI states and, only for a browser-only edge case,
+test-local Playwright request interception; that evidence never replaces the
+real Dex integration and E2E tests.
 
 `make dev` (`scripts/dev.sh`) is `make dev-dex` (Dex Server + Dex Web in the
 foreground) plus `make dev-app` (build the page and server binary, run it
@@ -121,9 +118,9 @@ After each edit batch, run the narrowest relevant Make target. Before calling
 If `make check` fails or cannot run, report `blocked=true`. Do not weaken, skip,
 or delete a failing check.
 
-`DEX_SERVER_BASELINE` and `DEX_CLI_BASELINE` pin Dex Server `server/v0.13.2`
-and Dex CLI `cli-v0.13.8`; `go.mod` pins the Dex Go SDK `v0.13.1`. These are
-the pins of basic-process template `v1.6.1`. Advance them only together with
+`DEX_SERVER_BASELINE` and `DEX_CLI_BASELINE` pin Dex Server `server/v0.14.0`
+and Dex CLI `cli-v0.14.0`; `go.mod` pins the Dex Go SDK `v0.13.1`. These are
+the pins of basic-process template `v1.7.1`. Advance them only together with
 the template release and the contract test in `internal/templatecontract`. The
 template's release machinery (`scripts/check-template-version.py`, the release
 CI job) and its scheduled `update-dex-dependencies` workflow are not ported:
