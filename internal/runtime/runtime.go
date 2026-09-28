@@ -129,7 +129,8 @@ func (runtime *Runtime) NewsletterSubscriptions() api.NewsletterSubscriptions {
 }
 
 // StartWorker starts the Worker and, once Dex answers a health check, starts
-// the newsletter subscriber list Flow and then the Slack Trigger runner. The
+// the newsletter subscriber list Flow and the Slack Trigger runner
+// independently, so a list that cannot start never blocks Slack requests. The
 // channel receives the first fatal error.
 func (runtime *Runtime) StartWorker() <-chan error {
 	result := make(chan error, 2)
@@ -142,15 +143,18 @@ func (runtime *Runtime) StartWorker() <-chan error {
 		if err := waitForDexServer(backgroundContext, runtime.client.HealthCheck, runtime.logger); err != nil {
 			return
 		}
-		if err := startSubscriberList(backgroundContext, runtime.subscriberList.StartList, runtime.logger); err != nil {
-			return
+		var background sync.WaitGroup
+		background.Go(func() {
+			_ = startSubscriberList(backgroundContext, runtime.subscriberList.StartList, runtime.logger)
+		})
+		if runtime.triggerRunner != nil {
+			background.Go(func() {
+				if err := runtime.triggerRunner.Run(backgroundContext); err != nil && !errors.Is(err, context.Canceled) {
+					result <- fmt.Errorf("run Slack request Trigger: %w", err)
+				}
+			})
 		}
-		if runtime.triggerRunner == nil {
-			return
-		}
-		if err := runtime.triggerRunner.Run(backgroundContext); err != nil && !errors.Is(err, context.Canceled) {
-			result <- fmt.Errorf("run Slack request Trigger: %w", err)
-		}
+		background.Wait()
 	}()
 	return result
 }

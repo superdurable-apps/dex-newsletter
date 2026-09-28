@@ -33,55 +33,63 @@ func NewNewsletterSubscriberListClient(flow *NewsletterSubscriberListFlow, flowI
 	return NewsletterSubscriberListClient{flow: flow, flowID: flowID, client: client}
 }
 
-// StartList starts the subscriber list Flow if it is not already running.
+// StartList starts the subscriber list Flow unless it already exists. An
+// existing list, open or stopped, is success: it was started earlier, perhaps
+// by an older build with another start request ID.
 func (listClient NewsletterSubscriberListClient) StartList(ctx context.Context) error {
 	client, err := listClient.dexClient()
 	if err != nil {
 		return err
 	}
 	_, err = client.StartFlow(ctx, listClient.flow, listClient.flowID, nil, NewsletterSubscriberListStartOptions())
+	var alreadyStarted *dex.FlowAlreadyStartedError
+	if errors.As(err, &alreadyStarted) {
+		return nil
+	}
 	return err
 }
 
-// AddNewsletterSubscriber adds one address. While a concurrent subscription
-// holds the list lock it retries with jittered backoff until ctx ends, so the
-// caller's deadline bounds the wait. A retried call is harmless: an address
-// that is already on the list is reported as already-subscribed.
+// AddNewsletterSubscriber adds one address. A retried call is harmless: an
+// address that is already on the list is reported as already-subscribed.
 func (listClient NewsletterSubscriberListClient) AddNewsletterSubscriber(ctx context.Context, email string) (AddNewsletterSubscriberResult, error) {
+	var result AddNewsletterSubscriberResult
+	err := listClient.invokeLocked(ctx, listClient.flow.AddNewsletterSubscriber, email, &result)
+	return result, err
+}
+
+// ListNewsletterSubscribers returns the current subscriber addresses.
+func (listClient NewsletterSubscriberListClient) ListNewsletterSubscribers(ctx context.Context) ([]string, error) {
+	var addresses []string
+	if err := listClient.invokeLocked(ctx, listClient.flow.ListNewsletterSubscribers, nil, &addresses); err != nil {
+		return nil, err
+	}
+	return addresses, nil
+}
+
+// invokeLocked invokes an RPC that takes the list lock. While another call
+// holds the lock it retries with jittered backoff until ctx ends, so the
+// caller's deadline bounds the wait.
+func (listClient NewsletterSubscriberListClient) invokeLocked(ctx context.Context, rpc any, input any, output any) error {
 	client, err := listClient.dexClient()
 	if err != nil {
-		return AddNewsletterSubscriberResult{}, err
+		return err
 	}
 	delay := 20 * time.Millisecond
 	for {
-		var result AddNewsletterSubscriberResult
-		err := client.InvokeRPC(ctx, listClient.flowID, listClient.flow.AddNewsletterSubscriber, email, &result)
+		err := client.InvokeRPC(ctx, listClient.flowID, rpc, input, output)
 		var conflict *dex.RPCLockConflictError
 		if err == nil || !errors.As(err, &conflict) {
-			return result, err
+			return err
 		}
 		timer := time.NewTimer(delay/2 + rand.N(delay))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return AddNewsletterSubscriberResult{}, errors.Join(err, ctx.Err())
+			return errors.Join(err, ctx.Err())
 		case <-timer.C:
 		}
 		delay = min(2*delay, maximumLockConflictDelay)
 	}
-}
-
-// ListNewsletterSubscribers returns the current subscriber addresses.
-func (listClient NewsletterSubscriberListClient) ListNewsletterSubscribers(ctx context.Context) ([]string, error) {
-	client, err := listClient.dexClient()
-	if err != nil {
-		return nil, err
-	}
-	var addresses []string
-	if err := client.InvokeRPC(ctx, listClient.flowID, listClient.flow.ListNewsletterSubscribers, nil, &addresses); err != nil {
-		return nil, err
-	}
-	return addresses, nil
 }
 
 func (listClient NewsletterSubscriberListClient) dexClient() (*dex.Client, error) {

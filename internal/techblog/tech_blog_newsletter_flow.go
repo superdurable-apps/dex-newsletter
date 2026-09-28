@@ -390,7 +390,8 @@ func (flow *TechBlogNewsletterFlow) GetSteps() []dex.StepDef {
 			// Gmail has no server-side idempotency, so a send must not replay.
 			// The connector's ASYNC default lets a send slower than the local
 			// phase run Execute again; SYNC persists before the handler
-			// returns, so only a Worker lost mid-call can repeat a send.
+			// returns, so only a Worker lost mid-call can repeat a send. The
+			// FDG analyzer requires this override to stay a static literal.
 			StepOptionsOverride: &dex.StepOptions{
 				ExecuteDurability: dex.StepDurabilitySync,
 				ExecuteFailure:    dex.ProceedToOnExecuteFailure(HoldNewsletterDeliveryAfterRetries{stages: stages}, nil),

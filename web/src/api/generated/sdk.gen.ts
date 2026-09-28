@@ -21,7 +21,7 @@ export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends 
 export const getApplicationInfo = <ThrowOnError extends boolean = false>(options?: Options<GetApplicationInfoData, ThrowOnError>): RequestResult<GetApplicationInfoResponses, unknown, ThrowOnError> => (options?.client ?? client).get<GetApplicationInfoResponses, unknown, ThrowOnError>({ url: '/api/application-info', ...options });
 
 /**
- * Adds one email address to the newsletter subscriber list. Subscribing an address that is already on the list succeeds with the same response, so the response never reveals list membership.
+ * Adds one email address to the newsletter subscriber list. Subscribing an address that is already on the list succeeds with the same response, and a full list answers 409 for every valid address, so no response reveals list membership.
  */
 export const subscribeToNewsletter = <ThrowOnError extends boolean = false>(options: Options<SubscribeToNewsletterData, ThrowOnError>): RequestResult<SubscribeToNewsletterResponses, SubscribeToNewsletterErrors, ThrowOnError> => (options.client ?? client).post<SubscribeToNewsletterResponses, SubscribeToNewsletterErrors, ThrowOnError>({
     url: '/api/newsletter/subscriptions',

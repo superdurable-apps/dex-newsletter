@@ -135,7 +135,8 @@ var sensitiveTextRedactions = []sensitiveTextRedaction{
 		replacement: redactedMarker,
 	},
 	// Google API keys, OAuth client secrets, OAuth access tokens, and OAuth
-	// refresh tokens. The Process uses Google OAuth for Sheets and Gmail.
+	// refresh tokens. The Process uses a Google API key for Gemini and Google
+	// OAuth for Gmail.
 	{
 		triggers:    []string{"aiza"},
 		pattern:     regexp.MustCompile(`\bAIza[0-9A-Za-z_\-]{30,}`),

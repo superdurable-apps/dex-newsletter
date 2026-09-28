@@ -40,7 +40,8 @@ Change the spec, run `make generate`, and update server, UI, mock server, and
 E2E coverage in the same change. `internal/api` implements those operations
 plus JSON 404/405 responses; the browser calls only the generated client and
 never Dex. `subscribeToNewsletter` answers the same 200 for a new and an
-existing address, so it never reveals list membership.
+existing address, and 409 for every valid address once the list is full, so
+no response reveals list membership.
 
 ## Dex Flows
 

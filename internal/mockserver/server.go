@@ -25,6 +25,7 @@ const (
 	applicationName = "Dex Tech Blog"
 	// The messages repeat the real handler's reader-facing copy.
 	invalidEmailMessage = "Enter a single email address, such as name@example.com."
+	listFullMessage     = "The newsletter is not accepting new subscribers right now."
 	unavailableMessage  = "Subscriptions are unavailable right now. Try again in a minute."
 )
 
@@ -40,7 +41,7 @@ var _ generated.Handler = (*Handler)(nil)
 
 // ControlRequest is the body of POST /__mock__/control.
 type ControlRequest struct {
-	// Action is "reset" or "fail-next".
+	// Action is "reset", "fail-next", or "full-next".
 	Action string `json:"action"`
 }
 
@@ -90,6 +91,8 @@ func (handler *Handler) SubscribeToNewsletter(ctx context.Context, request *gene
 		return &generated.NewsletterSubscription{Email: email}, nil
 	case errors.Is(err, ErrInvalidEmail):
 		return &generated.SubscribeToNewsletterBadRequest{Error: "invalid_email", Message: invalidEmailMessage}, nil
+	case errors.Is(err, ErrListFull):
+		return &generated.SubscribeToNewsletterConflict{Error: "subscriber_list_full", Message: listFullMessage}, nil
 	case errors.Is(err, ErrInjectedFailure):
 		return &generated.SubscribeToNewsletterServiceUnavailable{Error: "unavailable", Message: unavailableMessage}, nil
 	default:
@@ -121,6 +124,8 @@ func (handler *Handler) handleControl(w http.ResponseWriter, request *http.Reque
 		writeJSON(w, http.StatusOK, handler.store.Reset())
 	case "fail-next":
 		writeJSON(w, http.StatusOK, handler.store.FailNext())
+	case "full-next":
+		writeJSON(w, http.StatusOK, handler.store.FullNext())
 	default:
 		writeError(w, http.StatusBadRequest, "unknown_control", "mock control action is not supported")
 	}

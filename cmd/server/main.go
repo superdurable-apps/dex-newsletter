@@ -37,7 +37,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("create OpenAPI handler: %w", err)
 	}
-	server := &http.Server{Addr: ":" + environment("PORT", "8080"), Handler: applicationHandler(apiHandler), ReadHeaderTimeout: 5 * time.Second}
+	server := newHTTPServer(":"+environment("PORT", "8080"), applicationHandler(apiHandler))
 	workerResult := runtime.StartWorker()
 	serverResult := make(chan error, 1)
 	go func() { serverResult <- server.ListenAndServe() }()
@@ -62,6 +62,16 @@ func run() error {
 // maximumAPIRequestBytes bounds every API request body; the largest valid
 // request, one subscription, is well under 1 KiB.
 const maximumAPIRequestBytes = 16 << 10
+
+// newHTTPServer bounds how long a client may take to send a request and how
+// long an idle connection stays open, so a slow or stalled client cannot hold
+// a connection indefinitely.
+func newHTTPServer(address string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr: address, Handler: handler,
+		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: time.Minute,
+	}
+}
 
 func applicationHandler(apiHandler http.Handler) http.Handler {
 	mux := http.NewServeMux()

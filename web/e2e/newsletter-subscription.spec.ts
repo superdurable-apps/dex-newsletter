@@ -35,5 +35,5 @@ test('subscribes an address to the Dex subscriber list and accepts it again', as
   await email.fill('reader@localhost');
   await subscribe.click();
   await expect(page.getByRole('alert')).toHaveText('Enter a single email address, such as name@example.com.');
-  await expect(page.getByRole('status')).toHaveCount(0);
+  await expect(page.getByRole('status')).toBeEmpty();
 });

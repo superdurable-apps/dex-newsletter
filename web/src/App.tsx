@@ -51,12 +51,14 @@ export function App() {
   async function subscribe(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (subscription.status === 'submitting') return;
+    const submitted = email;
     setSubscription({ status: 'submitting' });
     try {
-      const response = await subscribeToNewsletter({ body: { email } });
+      const response = await subscribeToNewsletter({ body: { email: submitted } });
       if (response.data?.email) {
         setSubscription({ status: 'subscribed', email: response.data.email });
-        setEmail('');
+        // Keep an address the reader started editing while the request ran.
+        setEmail((current) => (current === submitted ? '' : current));
       } else {
         setSubscription({ status: 'failed', message: serverMessage(response.error) ?? unavailableMessage });
       }
@@ -98,12 +100,15 @@ export function App() {
               value={email}
               onChange={(event) => setEmail(event.target.value)}
             />
-            <button disabled={submitting} type="submit">Subscribe</button>
+            {/* aria-disabled keeps keyboard focus on the button while the
+                request runs; the submit guard above blocks a second request. */}
+            <button aria-disabled={submitting} type="submit">Subscribe</button>
           </div>
         </form>
-        {subscription.status === 'subscribed' && (
-          <p role="status" className="success">Subscribed as {subscription.email}.</p>
-        )}
+        {/* One live region that stays mounted announces each result. */}
+        <p role="status" className="success">
+          {subscription.status === 'subscribed' ? `Subscribed as ${subscription.email}.` : ''}
+        </p>
         {subscription.status === 'failed' && <p role="alert" className="error">{subscription.message}</p>}
       </section>
     </main>

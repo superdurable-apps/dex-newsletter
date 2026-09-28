@@ -34,7 +34,8 @@ type Invoker interface {
 	// SubscribeToNewsletter invokes subscribeToNewsletter operation.
 	//
 	// Adds one email address to the newsletter subscriber list. Subscribing an address that is already on
-	// the list succeeds with the same response, so the response never reveals list membership.
+	// the list succeeds with the same response, and a full list answers 409 for every valid address, so no
+	// response reveals list membership.
 	//
 	// POST /api/newsletter/subscriptions
 	SubscribeToNewsletter(ctx context.Context, request *NewsletterSubscriptionRequest) (SubscribeToNewsletterRes, error)
@@ -160,7 +161,8 @@ func (c *Client) sendGetApplicationInfo(ctx context.Context) (res *ApplicationIn
 // SubscribeToNewsletter invokes subscribeToNewsletter operation.
 //
 // Adds one email address to the newsletter subscriber list. Subscribing an address that is already on
-// the list succeeds with the same response, so the response never reveals list membership.
+// the list succeeds with the same response, and a full list answers 409 for every valid address, so no
+// response reveals list membership.
 //
 // POST /api/newsletter/subscriptions
 func (c *Client) SubscribeToNewsletter(ctx context.Context, request *NewsletterSubscriptionRequest) (SubscribeToNewsletterRes, error) {
