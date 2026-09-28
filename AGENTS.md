@@ -35,6 +35,20 @@ Newsletter requests start from Slack through a dedicated Connector Trigger, not
 an application HTTP webhook. The page reuses the template's `.panel`, `label`,
 `input`, and `button` styles; add no images, icons, animation, or branding.
 
+Every human Action requires the one permission `newsletter.manage`: one editor
+role reviews drafts and recovers failed requests, and each Action's state
+condition decides what Dex Web shows. Do not split it into per-Action
+permissions unless the user confirms separate roles.
+
+Dex Web v0.14.0 invokes Summary, Display, and Action RPCs by name without the
+RPC's registered `RPCOptions` loads, locks, or transactionality (the Go Client
+adds those itself). A Summary or Display RPC that reads an AttributeMap or
+Channel therefore fails in Dex Web and hides the run's Actions; give Dex Web a
+bounded Attribute instead (as `delivery-exceptions-shown` does). Integration
+tests call both RPCs that way on every display poll. Action RPCs rely on the
+review and attention gates' Channels, not on their locks, for at most one
+decision per gate.
+
 ## Naming
 
 Use precise domain names. Do not use the case-insensitive stems `runtime` or

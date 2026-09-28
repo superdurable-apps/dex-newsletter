@@ -164,7 +164,7 @@ Storage decision (Dex Skills 0.25.7 makes Dex state the default store):
 | Fact | Owner | Access | Dex primitive | External store |
 | --- | --- | --- | --- | --- |
 | Subscriber addresses (canonical, unique, in subscription order) | `NewsletterSubscriberListFlow` | one locked write per subscription or unsubscribe; one locked whole-list read per approved issue; contention is negligible at this size | one Attribute, `newsletter-subscribers`, of at most `newsletter.maxRecipients` (≤ 2000) entries, plus `newsletter-subscriber-count` for Dex Web | none: the list is bounded and always read whole, with no search, joins, or analytics |
-| One issue's audience and delivery outcomes | its `TechBlogNewsletterFlow` run | snapshot at approval; one update per send | Attributes `subscriber-list` and `delivery-summary`; AttributeMap `delivery-exceptions`, one instance per unconfirmed or rejected recipient | none |
+| One issue's audience and delivery outcomes | its `TechBlogNewsletterFlow` run | snapshot at approval; one update per send | Attributes `subscriber-list` and `delivery-summary`; AttributeMap `delivery-exceptions`, one instance per unconfirmed or rejected recipient (the complete record); Attribute `delivery-exceptions-shown`, a copy of the first 20 for Dex Web | none |
 
 Upgrading from the Google Sheet version is a one-way migration. The Sheet's
 subscribers are not imported (the list starts empty), and the Step types
@@ -176,13 +176,17 @@ fields from `TECH_BLOG_CONFIG_FILE`.
 
 ### Dex Web Actions and permissions
 
+One editor role takes every Action, so every Action requires the one
+permission `newsletter.manage`; the run's state decides which Actions appear.
+In Dex Web, set **Working as** to `newsletter.manage`.
+
 | Action | Available when | Permission |
 | --- | --- | --- |
-| Approve and send newsletter | `awaiting-editor-review` | `newsletter.approve` |
-| Request revision (feedback, max `review.maxRevisions`) | `awaiting-editor-review` | `newsletter.revise` |
-| Discard draft | `awaiting-editor-review` | `newsletter.discard` |
-| Retry failed stage | `needs-attention` | `newsletter.recover` |
-| Abandon request | `needs-attention` | `newsletter.recover` |
+| Approve and send newsletter | `awaiting-editor-review` | `newsletter.manage` |
+| Request revision (feedback, max `review.maxRevisions`) | `awaiting-editor-review` | `newsletter.manage` |
+| Discard draft | `awaiting-editor-review` | `newsletter.manage` |
+| Retry failed stage | `needs-attention` | `newsletter.manage` |
+| Abandon request | `needs-attention` | `newsletter.manage` |
 
 Actions carry the current review or attention gate key, so an Action from a stale
 page is rejected. The newsletter subject is editable in the run's detail view.

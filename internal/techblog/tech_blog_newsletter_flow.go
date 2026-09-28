@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -32,13 +31,10 @@ const (
 	NewsletterRequestTriggerBinding = "tech-blog-newsletter-request"
 )
 
-// Work Queue permissions, one per human Action.
-const (
-	PermissionApproveNewsletter = "newsletter.approve"
-	PermissionReviseNewsletter  = "newsletter.revise"
-	PermissionDiscardNewsletter = "newsletter.discard"
-	PermissionRecoverNewsletter = "newsletter.recover"
-)
+// PermissionManageNewsletter is the Work Queue permission of every human
+// Action. One editor role reviews drafts and recovers failed requests, so
+// Dex Web shows that editor every Action the run's current state allows.
+const PermissionManageNewsletter = "newsletter.manage"
 
 const (
 	postRequestAcknowledgementStepType = "PostRequestAcknowledgement"
@@ -56,6 +52,9 @@ const (
 	maximumPreviewRunes       = 60000
 	subscriberListReadTimeout = 30 * time.Second
 	deliveryExceptionKeyForm  = "recipient-%05d"
+	// maximumShownDeliveryExceptions bounds delivery-exceptions-shown, the
+	// copy of the first exceptions that Dex Web displays.
+	maximumShownDeliveryExceptions = 20
 )
 
 // Request status values. Action eligibility is keyed on these values.
@@ -150,8 +149,13 @@ var (
 	deliverySummary         = dex.DefineAttribute[model.DeliverySummary]("delivery-summary")
 	// deliveryExceptions keeps one instance per unconfirmed or rejected
 	// recipient, keyed by its zero-padded delivery position, so recording one
-	// never rewrites the others.
-	deliveryExceptions        = dex.DefineAttributeMap[model.DeliveryException]("delivery-exceptions")
+	// never rewrites the others. It is the complete record.
+	deliveryExceptions = dex.DefineAttributeMap[model.DeliveryException]("delivery-exceptions")
+	// deliveryExceptionsShown copies the first maximumShownDeliveryExceptions
+	// exceptions for GetDexDisplay. Dex Web v0.14.0 invokes Display RPCs
+	// without the RPC's registered AttributeMap loads, so a Display RPC that
+	// reads an AttributeMap fails there and hides the run's Actions.
+	deliveryExceptionsShown   = dex.DefineAttribute[[]model.DeliveryException]("delivery-exceptions-shown")
 	failedStage               = dex.DefineAttribute[string]("failed-stage")
 	attentionReason           = dex.DefineAttribute[string]("attention-reason")
 	attentionGateKey          = dex.DefineAttribute[string]("attention-gate-key")
@@ -462,12 +466,12 @@ func (flow *TechBlogNewsletterFlow) GetSteps() []dex.StepDef {
 func (flow *TechBlogNewsletterFlow) GetRPCs() []dex.RPCDef {
 	return []dex.RPCDef{
 		dex.DefineRPC(flow.GetDexSummary, nil),
-		dex.DefineRPC(flow.GetDexDisplay, &dex.RPCOptions{LoadAttributeMaps: []dex.AttributeDef{deliveryExceptions}}),
+		dex.DefineRPC(flow.GetDexDisplay, nil),
 		dex.DefineRPC(flow.ApproveNewsletterForDelivery, &dex.RPCOptions{
 			Action: dex.DefineAction(
 				"Approve and send newsletter",
 				dex.WhenAttributeMatches(requestStatus, dex.AttributeMatchEqual(StatusAwaitingEditorReview)),
-				dex.ActionRequiresPermission(PermissionApproveNewsletter),
+				dex.ActionRequiresPermission(PermissionManageNewsletter),
 			),
 			LockAttributes: []dex.AttributeLock{dex.LockAttribute(requestStatus), dex.LockAttribute(reviewGateKey), dex.LockAttribute(newsletterSubject)},
 		}),
@@ -475,7 +479,7 @@ func (flow *TechBlogNewsletterFlow) GetRPCs() []dex.RPCDef {
 			Action: dex.DefineAction(
 				"Request revision",
 				dex.WhenAttributeMatches(requestStatus, dex.AttributeMatchEqual(StatusAwaitingEditorReview)),
-				dex.ActionRequiresPermission(PermissionReviseNewsletter),
+				dex.ActionRequiresPermission(PermissionManageNewsletter),
 			),
 			LockAttributes: []dex.AttributeLock{dex.LockAttribute(requestStatus), dex.LockAttribute(reviewGateKey), dex.LockAttribute(blogRevisionCount)},
 		}),
@@ -483,7 +487,7 @@ func (flow *TechBlogNewsletterFlow) GetRPCs() []dex.RPCDef {
 			Action: dex.DefineAction(
 				"Discard draft",
 				dex.WhenAttributeMatches(requestStatus, dex.AttributeMatchEqual(StatusAwaitingEditorReview)),
-				dex.ActionRequiresPermission(PermissionDiscardNewsletter),
+				dex.ActionRequiresPermission(PermissionManageNewsletter),
 			),
 			LockAttributes: []dex.AttributeLock{dex.LockAttribute(requestStatus), dex.LockAttribute(reviewGateKey)},
 		}),
@@ -491,7 +495,7 @@ func (flow *TechBlogNewsletterFlow) GetRPCs() []dex.RPCDef {
 			Action: dex.DefineAction(
 				"Retry failed stage",
 				dex.WhenAttributeMatches(requestStatus, dex.AttributeMatchEqual(StatusNeedsAttention)),
-				dex.ActionRequiresPermission(PermissionRecoverNewsletter),
+				dex.ActionRequiresPermission(PermissionManageNewsletter),
 			),
 			LockAttributes: []dex.AttributeLock{dex.LockAttribute(requestStatus), dex.LockAttribute(attentionGateKey)},
 		}),
@@ -499,7 +503,7 @@ func (flow *TechBlogNewsletterFlow) GetRPCs() []dex.RPCDef {
 			Action: dex.DefineAction(
 				"Abandon request",
 				dex.WhenAttributeMatches(requestStatus, dex.AttributeMatchEqual(StatusNeedsAttention)),
-				dex.ActionRequiresPermission(PermissionRecoverNewsletter),
+				dex.ActionRequiresPermission(PermissionManageNewsletter),
 			),
 			LockAttributes: []dex.AttributeLock{dex.LockAttribute(requestStatus), dex.LockAttribute(attentionGateKey)},
 		}),
@@ -514,7 +518,7 @@ func (*TechBlogNewsletterFlow) GetPersistenceSchema() dex.PersistenceSchema {
 			changeWindowDescription, repositoryDigests, researchBrief, blogPost, blogPostTitle, blogHTML,
 			blogArtifactPath, publishedBlogURL, newsletterDraft, renderedNewsletter, newsletterSubject,
 			deliveryNewsletter, blogRevisionCount, editorFeedback, reviewGateKey, reviewReminderCount,
-			subscriberList, subscriberCount, deliveryCursor, deliverySummary, deliveryExceptions, failedStage,
+			subscriberList, subscriberCount, deliveryCursor, deliverySummary, deliveryExceptions, deliveryExceptionsShown, failedStage,
 			attentionReason, attentionGateKey, attentionCount, closingReason, approvedNewsletterSubject,
 			newsletterTextPreview, newsletterArtifactPath,
 		},
@@ -575,7 +579,7 @@ func (*TechBlogNewsletterFlow) GetDexSummary(ctx dex.Context, _ dex.None) (*dex.
 // dex:field attribute-key:failed-stage value-type:string editable:false description:"Failed stage"
 // dex:field attribute-key:subscriber-count value-type:int64 editable:false description:"Subscribers"
 // dex:field attribute-key:delivery-summary value-type:json editable:false description:"Delivery outcomes"
-// dex:field attribute-key:delivery-exceptions value-type:attribute-map editable:false description:"Recipients to check before resending"
+// dex:field attribute-key:delivery-exceptions-shown value-type:array editable:false description:"Recipients to check before resending (first 20)"
 // dex:field attribute-key:research-brief value-type:json editable:false description:"Research brief"
 // dex:field attribute-key:repository-digests value-type:array editable:false description:"Repository research"
 // dex:field attribute-key:closing-reason value-type:string editable:false description:"Closing reason"
@@ -599,7 +603,7 @@ func (*TechBlogNewsletterFlow) GetDexDisplay(ctx dex.Context, _ dex.None) (*dex.
 	stage, stageErr := optionalValue(failedStage.Get(ctx))
 	subscribersFound, subscribersErr := optionalValue(subscriberCount.Get(ctx))
 	summary, summaryErr := optionalValue(deliverySummary.Get(ctx))
-	exceptions, exceptionsErr := deliveryExceptionList(ctx)
+	exceptions, exceptionsErr := optionalValue(deliveryExceptionsShown.Get(ctx))
 	brief, briefErr := optionalValue(researchBrief.Get(ctx))
 	digests, digestsErr := optionalValue(repositoryDigests.Get(ctx))
 	closing, closingErr := optionalValue(closingReason.Get(ctx))
@@ -628,7 +632,7 @@ func (*TechBlogNewsletterFlow) GetDexDisplay(ctx dex.Context, _ dex.None) (*dex.
 		"failed-stage":                stage,
 		"subscriber-count":            subscribersFound,
 		"delivery-summary":            summary,
-		"delivery-exceptions":         exceptions,
+		"delivery-exceptions-shown":   exceptions,
 		"research-brief":              brief,
 		"repository-digests":          digests,
 		"closing-reason":              closing,
@@ -1523,6 +1527,15 @@ func (step RecordNewsletterDelivery) Execute(ctx dex.Context, result gmail.SendM
 		if err := deliveryExceptions.Set(ctx, fmt.Sprintf(deliveryExceptionKeyForm, cursor), exception); err != nil {
 			return nil, err
 		}
+		shown, err := optionalValue(deliveryExceptionsShown.Get(ctx))
+		if err != nil {
+			return nil, err
+		}
+		if len(shown) < maximumShownDeliveryExceptions {
+			if err := deliveryExceptionsShown.Set(ctx, append(shown, exception)); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if err := deliverySummary.Set(ctx, summary); err != nil {
 		return nil, err
@@ -2128,23 +2141,6 @@ func currentBlogRevision(ctx dex.Context) (*prompts.BlogRevision, error) {
 		return nil, err
 	}
 	return &prompts.BlogRevision{RevisionNumber: int(revisions), EditorFeedback: feedback, PreviousDraft: previous}, nil
-}
-
-// deliveryExceptionList returns the recorded delivery exceptions in delivery
-// order. The zero-padded instance keys sort in that order; the caller's RPC
-// must load the whole AttributeMap.
-func deliveryExceptionList(ctx dex.Context) ([]model.DeliveryException, error) {
-	keys := deliveryExceptions.AllInstanceKeys(ctx)
-	slices.Sort(keys)
-	exceptions := make([]model.DeliveryException, 0, len(keys))
-	for _, key := range keys {
-		exception, err := deliveryExceptions.Get(ctx, key)
-		if err != nil {
-			return nil, err
-		}
-		exceptions = append(exceptions, exception)
-	}
-	return exceptions, nil
 }
 
 func mapSlackThreadReplyToOperationInput(reply SlackThreadReply) slack.PostThreadReplyInput {
