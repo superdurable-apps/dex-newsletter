@@ -4,20 +4,19 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   check:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - uses: actions/checkout@v7
       - name: Read Dex CLI baseline
         id: dex-cli
         shell: bash
         run: echo "revision=$(cat DEX_CLI_BASELINE)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: superdurable/dex
           ref: ${{ steps.dex-cli.outputs.revision }}
@@ -28,26 +27,26 @@ jobs:
         run: |
           server_revision="$(git -C upstream-dex rev-parse "$(cat DEX_SERVER_BASELINE)^{commit}")"
           git -C upstream-dex merge-base --is-ancestor "${server_revision}" HEAD
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: upstream-dex/cli/go.mod
           cache-dependency-path: |
             go.sum
             tools/openapi/go.sum
             upstream-dex/cli/go.sum
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22.22.0
           cache: npm
           cache-dependency-path: |
             web/package-lock.json
             upstream-dex/web/package-lock.json
-      - name: Install Temporal CLI 1.8.1
+      - name: Install Temporal CLI 1.9.1
         run: |
           curl --fail --silent --show-error --location \
-            https://github.com/temporalio/cli/releases/download/v1.8.1/temporal_cli_1.8.1_linux_amd64.tar.gz \
+            https://github.com/temporalio/cli/releases/download/v1.9.1/temporal_cli_1.9.1_linux_amd64.tar.gz \
             --output /tmp/temporal-cli.tar.gz
-          echo "b94417b9a8760b30217f4b881dabce4b16a76a38b5e99e2eca3ce358b8030f06  /tmp/temporal-cli.tar.gz" | sha256sum --check
+          echo "09a0326a51db84d02735e53542b9ebd8c4758daf47482a9ab0abce15844e60d5  /tmp/temporal-cli.tar.gz" | sha256sum --check
           mkdir -p "$HOME/.local/bin"
           tar -xzf /tmp/temporal-cli.tar.gz -C "$HOME/.local/bin" temporal
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"

@@ -125,8 +125,8 @@ default entry at the same position. Every stage defaults to
   Chromium itself.
 - Dex CLI `v0.13.8` (`DEX_CLI_BASELINE`), which embeds Dex Web v2. The Homebrew
   `dexcli` may be older; point `DEXCLI` at the pinned binary.
-- Dex Server `server/v0.13.2` (`DEX_SERVER_BASELINE`) and Dex Go SDK `v0.12.1`
-  (`go.mod`).
+- Dex Server `server/v0.13.2` (`DEX_SERVER_BASELINE`) and Dex Go SDK `v0.13.1`
+  (`go.mod`), the pins of basic-process template `v1.6.1`.
 
 | Variable | Purpose |
 | --- | --- |
@@ -472,13 +472,10 @@ Schema v1 is not an accepted fallback.
 
 ## Dex skills
 
-The local `dex-app-builder` and `dex-sdk` entries delegate to one pinned public
-`dex-skills` submodule. Initialize it with:
-
-```bash
-git submodule update --init --recursive
-```
-
-`dex-app-builder` is the product workflow entrypoint and loads the sibling
-`dex-sdk` Core and Go guidance for backend implementation. Update the pin
-explicitly; never follow the skill repository's `main` branch implicitly.
+Develop this application with the released
+[Dex plugin](https://github.com/superdurable/dex-skills#install) installed in
+the coding-agent host. Invoke `dex-app-builder` as the product workflow
+entrypoint; it loads the matching `dex-sdk` guidance. Superverse Coding Sandbox
+preinstalls a pinned release, while external developers install the plugin in
+Codex, Claude Code, Cursor, or another Agent Skills client. The repository
+never assumes a fixed skill path and contains no project-local skill copy.

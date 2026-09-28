@@ -1,11 +1,10 @@
 {
   "schemaVersion": 1,
   "buildProfile": "go-react-v1",
-  "templateVersion": "1.4.1",
-  "minimumSandboxImageContractRevision": 2,
+  "templateVersion": "1.6.1",
+  "minimumSandboxImageContractRevision": 3,
   "openapiSpec": "openapi/openapi.yaml",
   "agentInstructions": "AGENTS.md",
-  "dexSkill": ".agents/skills/dex-app-builder/SKILL.md",
   "commands": {
     "bootstrap": "make bootstrap",
     "generate": "make generate",
