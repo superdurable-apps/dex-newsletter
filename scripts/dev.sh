@@ -172,6 +172,26 @@ print(values["name"], values["version"], "studio" if studio else "-")
 PY
 }
 
+# Builds a connector's Connector Studio UI tarball the way the library's
+# release workflow does: the shared React SDK first, then the connector's ui/
+# package, then connectorctl ui-artifact. npm output goes to ui-build.log.
+build_connector_ui_artifact() {
+  local checkout="$1" module_directory="$2" manifest="$3" destination="$4" log
+  log="${destination}/ui-build.log"
+  if [[ ! -f "${module_directory}/ui/package-lock.json" ]]; then
+    echo "warning: ${module_directory}/ui has no package-lock.json." >&2
+    return 1
+  fi
+  echo "Building the Connector Studio UI in ${module_directory}/ui ..."
+  (npm ci --prefix "${checkout}/sdk/react" && npm run build --prefix "${checkout}/sdk/react") >"${log}" 2>&1 || return 1
+  (cd "${module_directory}/ui" && npm ci && npm run build) >>"${log}" 2>&1 || return 1
+  (cd "${checkout}" && GOWORK=off go run ./cmd/connectorctl ui-artifact \
+    --manifest "${manifest}" \
+    --ui-root "${module_directory}/ui/dist" \
+    --output "${destination}/connector-ui.tgz" \
+    --digest-output "${destination}/connector-ui.tgz.sha256")
+}
+
 build_connector_release_override() {
   local module_directory="$1" manifest checkout metadata connector_id version studio module_path relative source_sha destination
   if [[ ! -d "${module_directory}" ]]; then
@@ -188,11 +208,6 @@ build_connector_release_override() {
     return 1
   fi
   read -r connector_id version studio <<<"${metadata}"
-  if [[ "${studio}" == "studio" ]]; then
-    echo "warning: connector ${connector_id} declares a Connector Studio UI; building its UI artifact is not automated here," >&2
-    echo "         so it has no release override and shows as Unsupported in Dex Web." >&2
-    return 1
-  fi
   if ! checkout="$(git -C "${module_directory}" rev-parse --show-toplevel 2>/dev/null)" || [[ ! -d "${checkout}/cmd/connectorctl" ]]; then
     echo "warning: ${module_directory} is not inside a dex-connectors-library checkout with cmd/connectorctl;" >&2
     echo "         connector ${connector_id} has no release override and shows as Unsupported in Dex Web." >&2
@@ -205,6 +220,15 @@ build_connector_release_override() {
   destination="${connector_artifact_directory}/${connector_id}"
   rm -rf -- "${destination}"
   mkdir -p "${destination}"
+  local ui_arguments=()
+  if [[ "${studio}" == "studio" ]]; then
+    if ! build_connector_ui_artifact "${checkout}" "${module_directory}" "${manifest}" "${destination}"; then
+      echo "warning: the Connector Studio UI build failed for ${connector_id} (log: ${destination}/ui-build.log);" >&2
+      echo "         it has no release override and shows as Unsupported in Dex Web." >&2
+      return 1
+    fi
+    ui_arguments=(--ui-artifact "${destination}/connector-ui.tgz" --ui-digest "${destination}/connector-ui.tgz.sha256")
+  fi
   # Same invocation as the library's release workflow (GOWORK=off, tag
   # <module-dir>/<version>), pointed at the local checkout's HEAD.
   if ! (cd "${checkout}" && GOWORK=off go run ./cmd/connectorctl release-artifact \
@@ -214,7 +238,8 @@ build_connector_release_override() {
     --tag "${relative}/${version}" \
     --source-sha "${source_sha}" \
     --output "${destination}/connector-release.json" \
-    --digest-output "${destination}/connector-release.json.sha256"); then
+    --digest-output "${destination}/connector-release.json.sha256" \
+    ${ui_arguments[@]+"${ui_arguments[@]}"}); then
     echo "warning: connectorctl release-artifact failed for ${connector_id}; it shows as Unsupported in Dex Web." >&2
     return 1
   fi
