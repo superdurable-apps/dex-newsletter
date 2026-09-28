@@ -5,7 +5,7 @@ product, **Dex Tech Blog**, is a Slack-triggered Dex Process that produces a
 tech blog post and newsletter. Newsletter requests start from Slack, are
 reviewed in Dex Web, and are mailed to the readers who subscribed on the
 application's home page. Subscribers are stored in Dex. This is a Superverse
-`go-react-v1` application built on the Dex basic-process template `v1.6.1`.
+`go-react-v1` application built on the Dex basic-process template `v1.7.1`.
 
 ## Not yet built
 
@@ -141,9 +141,17 @@ recipient. The token is the first 128 bits of HMAC-SHA256 over the address
 under the key in `TECH_BLOG_UNSUBSCRIBE_KEY_FILE`, so nothing is stored per
 subscriber and a token cannot be guessed from an address. The key is a runtime
 secret, never Flow state. Keep it: a new key invalidates every link already
-sent. The editor preview and the newsletter HTML artifact show an example link
-that unsubscribes nobody. An unsubscribe applies to every issue approved after
-it; a delivery already running keeps its snapshot.
+sent, and because the API answers the same for every well-formed token, a
+reader who opens an old link still sees "You're unsubscribed" while staying on
+the list. The editor preview and the newsletter HTML artifact show an example
+link whose token is deliberately malformed, so opening it says the link is not
+valid. An unsubscribe applies to every issue approved after it; a delivery
+already running keeps its snapshot.
+
+`newsletter.subscriptionPageUrl` must be the address readers use to reach this
+page. The default, `http://127.0.0.1:8080/`, works only on the sending machine,
+and the application logs a warning at startup while it points at a loopback or
+`localhost` host. Change it together with `PORT`.
 
 Open the `newsletter-subscriber-list` run in Dex Web to see the count and the
 addresses. Don't stop it: a stopped list rejects subscriptions (503) and holds
@@ -155,7 +163,7 @@ Storage decision (Dex Skills 0.25.7 makes Dex state the default store):
 
 | Fact | Owner | Access | Dex primitive | External store |
 | --- | --- | --- | --- | --- |
-| Subscriber addresses (canonical, unique, in subscription order) | `NewsletterSubscriberListFlow` | one locked write per subscription; one whole-list read per approved issue | one Attribute, `newsletter-subscribers`, of at most `newsletter.maxRecipients` (≤ 2000) entries, plus `newsletter-subscriber-count` for Dex Web | none: the list is bounded and always read whole, with no search, joins, or analytics |
+| Subscriber addresses (canonical, unique, in subscription order) | `NewsletterSubscriberListFlow` | one locked write per subscription or unsubscribe; one locked whole-list read per approved issue; contention is negligible at this size | one Attribute, `newsletter-subscribers`, of at most `newsletter.maxRecipients` (≤ 2000) entries, plus `newsletter-subscriber-count` for Dex Web | none: the list is bounded and always read whole, with no search, joins, or analytics |
 | One issue's audience and delivery outcomes | its `TechBlogNewsletterFlow` run | snapshot at approval; one update per send | Attributes `subscriber-list` and `delivery-summary`; AttributeMap `delivery-exceptions`, one instance per unconfirmed or rejected recipient | none |
 
 Upgrading from the Google Sheet version is a one-way migration. The Sheet's
@@ -311,7 +319,7 @@ outside `.dex-dev/`, so a reset keeps them.
 | --- | --- | --- |
 | `DEX_DEV_PORT` | `8801` | Dex FlowService port; the application connects to `127.0.0.1:$DEX_DEV_PORT`. |
 | `DEX_DEV_WEB_PORT` | `8802` | Dex Web port. If you change it, set `dexWebUrl` in `TECH_BLOG_CONFIG_FILE` to match so the **Open Dex Web** link works. |
-| `PORT` | `8080` | Application page and API. |
+| `PORT` | `8080` | Application page and API. If you change it, change `newsletter.subscriptionPageUrl` to match, or unsubscribe links point at the old port. |
 | `DEX_WORKER_BIND_ADDRESS`, `DEX_WORKER_TARGET` | `127.0.0.1:8811` | Dex Worker address. Keep it stable across restarts so open Runs return to the same Worker. |
 | `DEX_DEV_CONNECTOR_CONFIG_DIR` | `~/.dex/connectors` | Connector configuration directory passed to `dexcli dev`. |
 | `DEX_DEV_STATE_DIR` | `.dex-dev` | Persistent local Dex state. |
@@ -510,8 +518,10 @@ make build
 make check
 ```
 
-`make test-unit` runs the Go tests, the web tests, and the offline Python tests
-of `scripts/local-connections/`, which use temporary files only.
+`make test-unit` regenerates the OpenAPI outputs, then runs the Go tests, the
+web component tests (which mock the generated client), the test of
+`scripts/generate-openapi.sh`, and the offline Python tests of
+`scripts/local-connections/`, which use temporary files only.
 
 Integration and E2E tests run under `scripts/with-dex.sh`, which starts a
 throwaway `dexcli dev` on free ports with temporary state and an empty
@@ -525,8 +535,11 @@ on success and kept (with its path printed) on failure.
 exit stops that process and waits for it, so no server is left running. The
 Playwright suite loads the production page, asserts that the application name
 and the subscription form (one Email field, one Subscribe button) render,
-subscribes a fresh address through the real Dex subscriber list, and checks
-that the removed `/api/flows` management routes return 404. There is no
+subscribes a fresh address through the real Dex subscriber list, opens that
+address's unsubscribe link and reads the list back through Dex's read-only
+`GetAttributes` call to prove the address is gone, and checks that the removed
+`/api/flows` management routes return 404. `scripts/run-e2e.sh` gives the
+server a throwaway unsubscribe key, which the suite uses to build links. There is no
 application mock server: component tests mock the generated client, and mock
 evidence never replaces the real Dex and application journey.
 

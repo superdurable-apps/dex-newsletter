@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
@@ -14,10 +15,27 @@ function unsubscribeToken(canonicalAddress: string): string {
   return mac.digest().subarray(0, 16).toString('base64url');
 }
 
+// storedSubscribers reads the newsletter-subscribers Attribute of the
+// subscriber list Flow on the throwaway Dex stack, through the read-only
+// FlowService GetAttributes call. The API answers alike for every token, so
+// only Dex itself shows whether an unsubscribe removed anyone.
+function storedSubscribers(): string[] {
+  const dexcli = process.env.DEXCLI ?? 'dexcli';
+  const server = process.env.DEX_FLOW_SERVICE_ADDRESS;
+  if (!server) throw new Error('DEX_FLOW_SERVICE_ADDRESS is not set; run through scripts/with-dex.sh');
+  const output = execFileSync(dexcli, [
+    'api', 'call', 'GetAttributes', '-server', server,
+    '-data', JSON.stringify({ flowId: 'newsletter-subscriber-list', keys: ['newsletter-subscribers'] }),
+  ], { encoding: 'utf8' });
+  const attribute = (JSON.parse(output).attributes ?? []).find((entry: { key: string }) => entry.key === 'newsletter-subscribers');
+  if (!attribute) return [];
+  const payload = attribute.value?.objValue?.payload;
+  if (typeof payload !== 'string') throw new Error(`unexpected newsletter-subscribers value: ${JSON.stringify(attribute.value)}`);
+  return JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
+}
+
 // Real journey: the page, the Go API, and the Dex subscriber list Flow on the
-// throwaway stack of make test-e2e. The mock journey lives in
-// mock-newsletter-subscription.spec.ts.
-test.skip(process.env.E2E_MOCK === 'true', 'requires the real Dex stack');
+// throwaway stack of make test-e2e.
 
 test('subscribes an address to the Dex subscriber list and accepts it again', async ({ page, request }) => {
   // The application starts the subscriber list Flow once Dex answers, so the
@@ -60,12 +78,16 @@ test('an unsubscribe link removes the reader as soon as it opens', async ({ page
     .toBe(200);
   const reader = `e2e-unsubscribe-${Date.now()}@example.com`;
   expect((await request.post('/api/newsletter/subscriptions', { data: { email: reader } })).status()).toBe(200);
+  expect(storedSubscribers()).toContain(reader);
 
   const unsubscribed = page.waitForResponse((response) => response.url().endsWith('/api/newsletter/unsubscriptions'));
   await page.goto(`/?unsubscribe=${unsubscribeToken(reader)}`);
   expect((await unsubscribed).status()).toBe(200);
   await expect(page.getByRole('status')).toHaveText("You're unsubscribed. You won't receive future issues.");
   await expect(page).toHaveURL((url) => !url.searchParams.has('unsubscribe'));
+  // Dex no longer holds the address, and the warm-up subscriber stays.
+  expect(storedSubscribers()).not.toContain(reader);
+  expect(storedSubscribers()).toContain('warm-up@example.com');
   // The same page still offers the one subscription form.
   await expect(page.getByRole('button')).toHaveCount(1);
   await expect(page.getByRole('textbox', { name: 'Email' })).toBeVisible();

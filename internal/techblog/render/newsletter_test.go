@@ -704,3 +704,40 @@ func TestPersonalizeNewsletterReplacesThePlaceholderForOneRecipient(t *testing.T
 		t.Error("a quote in the link broke out of the href attribute")
 	}
 }
+
+func TestPersonalizeNewsletterAddsALinkToABodyRenderedWithoutOne(t *testing.T) {
+	legacy := model.RenderedNewsletter{
+		Subject:  "S",
+		HTMLBody: "<!doctype html><html><body><p>Issue</p></body></html>",
+		TextBody: "Issue\n",
+	}
+	link := "https://news.example.com/?unsubscribe=Ab0-_Ab0-_Ab0-_Ab0-_Ab"
+	personalized, err := PersonalizeNewsletter(legacy, link)
+	if err != nil {
+		t.Fatalf("PersonalizeNewsletter: %v", err)
+	}
+	if !strings.Contains(personalized.HTMLBody, `href="`+link+`"`) || !strings.HasSuffix(personalized.HTMLBody, "</body></html>") {
+		t.Errorf("HTML body did not gain an unsubscribe link before </body>:\n%s", personalized.HTMLBody)
+	}
+	if personalized.TextBody != "Issue\n\nUnsubscribe: "+link+"\n" {
+		t.Errorf("text body = %q", personalized.TextBody)
+	}
+}
+
+func TestPersonalizeNewsletterRefusesAPlaceholderInTheContent(t *testing.T) {
+	doubled := model.RenderedNewsletter{
+		HTMLBody: `<a href="` + UnsubscribeURLPlaceholder + `">x</a><a href="` + UnsubscribeURLPlaceholder + `">y</a>`,
+		TextBody: UnsubscribeURLPlaceholder + "\n" + UnsubscribeURLPlaceholder + "\n",
+	}
+	if _, err := PersonalizeNewsletter(doubled, "https://news.example.com/?unsubscribe=Ab0-_Ab0-_Ab0-_Ab0-_Ab"); err == nil {
+		t.Fatal("PersonalizeNewsletter personalized two copies of the placeholder")
+	}
+}
+
+func TestRenderNewsletterRejectsContentQuotingThePlaceholder(t *testing.T) {
+	draft := sampleNewsletterDraft()
+	draft.Closing = "See " + UnsubscribeURLPlaceholder + " for details."
+	if _, err := RenderNewsletter(draft, sampleBlogPost(), samplePresentation(), sampleFooter); err == nil {
+		t.Fatal("RenderNewsletter accepted content holding the unsubscribe placeholder")
+	}
+}

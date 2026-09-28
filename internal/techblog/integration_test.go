@@ -72,8 +72,23 @@ func TestHappyPathWithRevisionStaleGateAndWorkerReplacement(t *testing.T) {
 	if preview, _ := display["newsletter-text-preview"].(string); !strings.Contains(preview, "revised") {
 		t.Fatalf("editor preview does not show the revised newsletter: %.200q", preview)
 	}
-	if newsletterPath, _ := display["newsletter-artifact-path"].(string); !strings.HasSuffix(newsletterPath, ".newsletter.html") {
+	newsletterPath, _ := display["newsletter-artifact-path"].(string)
+	if !strings.HasSuffix(newsletterPath, ".newsletter.html") {
 		t.Fatalf("newsletter preview artifact = %q", newsletterPath)
+	}
+	// Editors see an example link that opens the real page but removes nobody.
+	previewText, _ := display["newsletter-text-preview"].(string)
+	previewHTML, err := os.ReadFile(newsletterPath)
+	if err != nil {
+		t.Fatalf("read newsletter preview artifact: %v", err)
+	}
+	for name, preview := range map[string]string{"text preview": previewText, "HTML preview": string(previewHTML)} {
+		if !strings.Contains(preview, "https://news.example.com/newsletter?unsubscribe="+unsubscribe.ExampleToken) {
+			t.Errorf("the %s does not show the example unsubscribe link", name)
+		}
+		if strings.Contains(preview, render.UnsubscribeURLPlaceholder) || strings.Contains(preview, harness.unsubscribeKey.Token("alice@example.com")) {
+			t.Errorf("the %s shows the placeholder or a real subscriber's link", name)
+		}
 	}
 	if display["blog-revision-count"] != float64(1) {
 		t.Fatalf("revision count = %v, want 1", display["blog-revision-count"])
@@ -280,6 +295,10 @@ func TestGmailAuthenticationFailurePausesDeliveryAndRetryResumes(t *testing.T) {
 	for _, recipient := range []string{"alice@example.com", "bob@example.com", "dana@example.org"} {
 		if got := harness.providers.gmail.acceptedCount(recipient); got != 1 {
 			t.Errorf("accepted sends to %s = %d, want exactly 1", recipient, got)
+		}
+		// The resumed sends still carry each recipient's own link.
+		if body := harness.providers.gmail.bodyTo(recipient); !strings.Contains(body, "unsubscribe="+harness.unsubscribeKey.Token(recipient)) {
+			t.Errorf("the resumed newsletter to %s does not carry its own unsubscribe link", recipient)
 		}
 	}
 }

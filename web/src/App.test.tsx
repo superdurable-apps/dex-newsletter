@@ -226,6 +226,23 @@ describe('App', () => {
       expect(await screen.findByRole('alert')).toHaveTextContent("We couldn't unsubscribe you right now.");
     });
 
+    it('keeps a subscribe started while the unsubscribe is still running', async () => {
+      let finishUnsubscribe: (value: unknown) => void = () => {};
+      api.unsubscribeFromNewsletter.mockReturnValue(new Promise((resolve) => { finishUnsubscribe = resolve; }));
+      let finishSubscribe: (value: unknown) => void = () => {};
+      api.subscribeToNewsletter.mockReturnValue(new Promise((resolve) => { finishSubscribe = resolve; }));
+      window.history.replaceState(null, '', `/?unsubscribe=${token}`);
+      await renderReady();
+      submitEmail('reader@example.com');
+      expect(screen.getByRole('button', { name: 'Subscribe' })).toHaveAttribute('aria-disabled', 'true');
+      finishUnsubscribe({ data: { status: 'unsubscribed' } });
+      await Promise.resolve();
+      // The late unsubscribe answer does not lift the double-submit guard.
+      expect(screen.getByRole('button', { name: 'Subscribe' })).toHaveAttribute('aria-disabled', 'true');
+      finishSubscribe({ data: { email: 'reader@example.com' } });
+      expect(await screen.findByRole('status')).toHaveTextContent('Subscribed as reader@example.com.');
+    });
+
     it('lets the reader subscribe again after unsubscribing', async () => {
       api.unsubscribeFromNewsletter.mockResolvedValue({ data: { status: 'unsubscribed' } });
       api.subscribeToNewsletter.mockResolvedValue({ data: { email: 'reader@example.com' } });

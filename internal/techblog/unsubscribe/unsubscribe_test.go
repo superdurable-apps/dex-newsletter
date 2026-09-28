@@ -124,8 +124,8 @@ func TestLinks(t *testing.T) {
 	if link != want {
 		t.Fatalf("URL = %q, want %q", link, want)
 	}
-	if example := links.ExampleURL(); !strings.HasSuffix(example, "unsubscribe="+strings.Repeat("x", TokenLength)) {
-		t.Fatalf("ExampleURL = %q", example)
+	if example := links.ExampleURL(); !strings.HasSuffix(example, "unsubscribe="+ExampleToken) || ValidToken(ExampleToken) {
+		t.Fatalf("ExampleURL = %q; want the malformed preview token", example)
 	}
 	for _, page := range []string{"", "/relative", "ftp://example.com/", "http://"} {
 		if _, err := NewLinks(key, page); err == nil {

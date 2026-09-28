@@ -29,6 +29,8 @@ const (
 	tokenContext = "dex-tech-blog/newsletter-unsubscribe/v1\x00"
 	// QueryParameter names the token in an unsubscribe link.
 	QueryParameter = "unsubscribe"
+	// ExampleToken is the token of preview links; it never passes ValidToken.
+	ExampleToken = "preview"
 )
 
 // Key signs unsubscribe tokens.
@@ -112,10 +114,11 @@ func (links Links) URL(canonicalAddress string) string {
 	return links.withToken(links.key.Token(canonicalAddress))
 }
 
-// ExampleURL returns a link of the real shape that unsubscribes nobody, for
-// previews shown to editors.
+// ExampleURL returns a link to the real page, for previews shown to editors.
+// Its token is deliberately malformed, so opening it says the link is not
+// valid rather than reporting an unsubscribe that removed nobody.
 func (links Links) ExampleURL() string {
-	return links.withToken(strings.Repeat("x", TokenLength))
+	return links.withToken(ExampleToken)
 }
 
 func (links Links) withToken(token string) string {

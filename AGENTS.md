@@ -4,7 +4,7 @@ This repository is the Dex Tech Blog process product: a Slack-triggered Dex
 Process that produces a tech blog post and newsletter, with review in Dex Web,
 mailed to readers who subscribed on the application's home page.
 It is a Superverse `go-react-v1`
-application adapted from the basic-process template (release `v1.6.1`). Read
+application adapted from the basic-process template (release `v1.7.1`). Read
 `.superverse/template.json` and `openapi/openapi.yaml`, then load the installed
 `dex-app-builder` skill through the current coding-agent host before changing
 product behavior; it loads the sibling `dex-sdk` Core and Go guidance for
@@ -35,6 +35,20 @@ Newsletter requests start from Slack through a dedicated Connector Trigger, not
 an application HTTP webhook. The page reuses the template's `.panel`, `label`,
 `input`, and `button` styles; add no images, icons, animation, or branding.
 
+## Naming
+
+Use precise domain names. Do not use the case-insensitive stems `runtime` or
+`normaliz` in repository-owned package, directory, file, type, interface,
+method, function, field, parameter, variable, constant, schema, configuration,
+or resource names. Name the concrete execution role or transformation instead,
+such as `TrimWhitespace`, `CanonicalizeURL`, or
+`ValidateAndSortSelections`. Generated and third-party code,
+framework-mandated identifiers, and migration code or tests that must reference
+immutable legacy names are exempt. Known deviations, to be renamed in a
+separate change: the `internal/runtime` package and the
+`internal/techblog/render/normalize*.go` files and their `Normalize*` and
+`normalize*` identifiers. New code follows the rule.
+
 ## HTTP contract
 
 `openapi/openapi.yaml` is the only HTTP contract source and defines exactly three
@@ -57,7 +71,8 @@ them, starts the Worker, and starts the subscriber list lives in
 `internal/runtime`. `NewsletterSubscriberListFlow` (fixed ID
 `newsletter-subscriber-list`, no Steps) is the only owner of subscriber
 addresses: one bounded Attribute written by the locked
-`AddNewsletterSubscriber` RPC and read by `TechBlogNewsletterFlow`'s
+`AddNewsletterSubscriber` and `RemoveNewsletterSubscriber` RPCs and read by
+`TechBlogNewsletterFlow`'s
 `LoadNewsletterSubscribers` Step through `ListNewsletterSubscribers`. Keep
 subscriber data in Dex; do not add a database, cache, or spreadsheet copy
 without a storage decision the user confirms. Every Flow is a Dex
