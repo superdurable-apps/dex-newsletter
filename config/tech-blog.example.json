@@ -4,23 +4,18 @@
   "languageModel": {
     "provider": "gemini",
     "interpretRequest": {
-      "model": "gemini-3.5-flash-lite",
       "maxOutputTokens": 8192
     },
     "summarizeRepository": {
-      "model": "gemini-3.5-flash-lite",
       "maxOutputTokens": 16384
     },
     "synthesizeResearch": {
-      "model": "gemini-3.5-flash-lite",
       "maxOutputTokens": 16384
     },
     "draftBlogPost": {
-      "model": "gemini-3.5-flash-lite",
       "maxOutputTokens": 32768
     },
     "draftNewsletter": {
-      "model": "gemini-3.5-flash-lite",
       "maxOutputTokens": 16384
     }
   },
@@ -62,7 +57,7 @@
       {
         "owner": "superdurable",
         "name": "dex-connectors-library",
-        "description": "Official Dex connectors (Slack, Gmail, Google Sheets, GitHub, OpenAI, HTTP), the connector SDK, manifests, and code generation.",
+        "description": "Official Dex connectors (Slack, Gmail, Google Sheets, GitHub, and language-model providers such as Gemini, OpenAI, and Claude), the connector SDK, manifests, and code generation.",
         "topics": [
           "connectors",
           "integrations",
@@ -117,18 +112,6 @@
     "artifactDirectory": "artifacts"
   },
   "newsletter": {
-    "subscriberSheet": {
-      "spreadsheetId": "",
-      "tab": "",
-      "range": "A:B"
-    },
-    "emailColumnHeader": "email",
-    "statusColumnHeader": "status",
-    "unsubscribedStatusValues": [
-      "unsubscribed",
-      "opted-out",
-      "bounced"
-    ],
     "maxRecipients": 500,
     "footer": "You are receiving this because you subscribed to Dex engineering updates."
   },

@@ -227,7 +227,7 @@ func NoSubscribers(post model.BlogPost) string {
 	var message slackMessage
 	message.appendLine(":mailbox_with_no_mail: The newsletter was not sent because the subscriber list has no deliverable addresses.")
 	message.appendField("Title", postTitleText(post))
-	message.appendLine("Check the subscriber sheet, then post a new request to try again.")
+	message.appendLine("Readers can subscribe on the application's home page. Once someone has subscribed, post a new request to try again.")
 	return message.render()
 }
 
@@ -236,7 +236,7 @@ func NoSubscribers(post model.BlogPost) string {
 // as zero. When nothing was confirmed sent but some sends are unconfirmed, the
 // header says delivery could not be confirmed rather than that it failed.
 // Subscribers left out by the recipient limit (SkippedOverLimit) and unusable
-// sheet entries (InvalidAddresses) are reported on their own lines when
+// stored addresses (InvalidAddresses) are reported on their own lines when
 // non-zero; they never change the header, which counts only the subscribers
 // delivery was meant to reach. publishedURL is linked, with the post title as
 // its label, when it is a validated http(s) URL and omitted otherwise;
@@ -275,7 +275,7 @@ func DeliveryReport(post model.BlogPost, summary model.DeliverySummary, publishe
 		message.appendLine(countedNoun(skipped, "subscriber was", "subscribers were") + " not sent because of the recipient limit (`newsletter.maxRecipients`).")
 	}
 	if invalid := nonNegative(summary.InvalidAddresses); invalid > 0 {
-		message.appendLine(countedNoun(invalid, "subscriber sheet entry was", "subscriber sheet entries were") +
+		message.appendLine(countedNoun(invalid, "stored subscriber address was", "stored subscriber addresses were") +
 			" skipped because " + pluralChoice(invalid, "it is not a valid email address.", "they are not valid email addresses."))
 	}
 	message.appendField("Blog artifact", artifactReferenceText(artifactPath, blogArtifactLinkLabel))
@@ -283,9 +283,11 @@ func DeliveryReport(post model.BlogPost, summary model.DeliverySummary, publishe
 }
 
 // DeliveryHeldForAttention returns the reply reporting that newsletter
-// delivery paused part-way because the Gmail connection itself failed (for
-// example, revoked or expired credentials), so no further subscriber can be
-// sent to until an operator reauthorizes Gmail and retries the run. summary
+// delivery paused part-way, either because the Gmail connection itself failed
+// (for example, revoked or expired credentials) or because Gmail kept failing
+// after every retry (for example, at the daily sending limit). reason names
+// the cause, so the header and next step state none. No further subscriber is
+// sent to until an operator retries the run. summary
 // holds the counts recorded before the pause; the subscriber whose send
 // failed is not among them, and a retry resumes with it. It reports only
 // counts, never recipient addresses, and treats negative counts as zero.
@@ -294,10 +296,10 @@ func DeliveryHeldForAttention(post model.BlogPost, summary model.DeliverySummary
 	counts := deliveryCountsOf(summary)
 	var message slackMessage
 	if counts.total == 0 {
-		message.appendLine(":warning: *Newsletter sending paused* because the Gmail connection failed.")
+		message.appendLine(":warning: *Newsletter sending paused*.")
 	} else {
 		message.appendLine(":warning: *Newsletter sending paused* after sending to " + strconv.Itoa(counts.sent) + " of " +
-			countedNoun(counts.total, "subscriber", "subscribers") + " because the Gmail connection failed.")
+			countedNoun(counts.total, "subscriber", "subscribers") + ".")
 	}
 	message.appendField("Title", postTitleText(post))
 	message.appendQuotedField("Details", quotedText(reason, maximumReasonRunes))
@@ -305,7 +307,7 @@ func DeliveryHeldForAttention(post model.BlogPost, summary model.DeliverySummary
 	if counts.uncertain > 0 {
 		message.appendLine(unconfirmedDeliveryText)
 	}
-	message.appendField("Next step", "Reauthorize Gmail in Dex Web, then retry the run. Sending resumes with the first subscriber not yet attempted.")
+	message.appendField("Next step", "Fix the cause in the details, then retry the run in Dex Web. Sending resumes with the first subscriber not yet attempted.")
 	runMarkup, _ := runReferenceMarkup(runReference, runLinkLabel)
 	message.appendField("Run", runMarkup)
 	return message.render()
@@ -358,6 +360,42 @@ func (counts deliveryCounts) undeliveredText(notAttemptedLabel string) string {
 		undelivered = append(undelivered, strconv.Itoa(counts.notAttempted)+" "+notAttemptedLabel)
 	}
 	return strings.Join(undelivered, middleDotSeparator)
+}
+
+// DeliveryStopped returns the final reply when an operator abandons, or the
+// attention wait expires on, a newsletter whose delivery had paused. Unlike
+// RequestFailed it never invites a new request once any send was attempted:
+// a new request would email every subscriber again, including those already
+// reached. It reports only counts, never recipient addresses. reason is shown
+// as a quoted block and omitted when blank; publishedURL and artifactPath are
+// shown as in DeliveryReport.
+func DeliveryStopped(post model.BlogPost, summary model.DeliverySummary, reason string, publishedURL string, artifactPath string) string {
+	counts := deliveryCountsOf(summary)
+	attempted := saturatingSum(counts.sent, counts.undelivered)
+	var message slackMessage
+	if attempted == 0 {
+		message.appendLine(":octagonal_sign: *Newsletter delivery stopped* before any email was sent.")
+	} else {
+		message.appendLine(":octagonal_sign: *Newsletter delivery stopped* after sending to " + strconv.Itoa(counts.sent) + " of " +
+			countedNoun(counts.total, "subscriber", "subscribers") + ".")
+	}
+	if publishedLink := slackLink(publishedURL, publishedPostLabel(post)); publishedLink != "" {
+		message.appendField("Published post", publishedLink)
+	} else {
+		message.appendField("Title", postTitleText(post))
+	}
+	message.appendQuotedField("Details", quotedText(reason, maximumReasonRunes))
+	message.appendField("Not delivered", counts.undeliveredText("not attempted"))
+	if counts.uncertain > 0 {
+		message.appendLine(unconfirmedDeliveryText)
+	}
+	if attempted == 0 {
+		message.appendLine("Post a new message in this channel to try again.")
+	} else {
+		message.appendLine("Do not post this request again: a new request would email every subscriber again, including those already sent to.")
+	}
+	message.appendField("Blog artifact", artifactReferenceText(artifactPath, blogArtifactLinkLabel))
+	return message.render()
 }
 
 // RequestFailed returns the reply reporting that the request ended without a

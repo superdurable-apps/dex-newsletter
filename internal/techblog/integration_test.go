@@ -25,7 +25,6 @@ import (
 	github "github.com/superdurable/dex-connectors-library/connectors/github"
 	"github.com/superdurable/dex-connectors-library/connectors/google/gemini"
 	"github.com/superdurable/dex-connectors-library/connectors/google/gmail"
-	"github.com/superdurable/dex-connectors-library/connectors/google/spreadsheet"
 	"github.com/superdurable/dex-connectors-library/connectors/slack"
 	"github.com/superdurable/dex-connectors-library/sdkgo"
 	"github.com/superdurable/dex/blob-cache-go/blobcache"
@@ -118,8 +117,16 @@ func TestHappyPathWithRevisionStaleGateAndWorkerReplacement(t *testing.T) {
 			t.Errorf("sends to %s = %d, want exactly 1", recipient, got)
 		}
 	}
-	if got := harness.providers.gmail.sendCount("carol@example.com"); got != 0 {
-		t.Errorf("unsubscribed carol received %d sends", got)
+	if got := harness.providers.gmail.totalSends(); got != 4 {
+		t.Errorf("Gmail sends = %d, want 4: one per unique subscriber", got)
+	}
+	final, err := harness.display(ctx, flowID)
+	if err != nil {
+		t.Fatalf("display after delivery: %v", err)
+	}
+	if exceptions := deliveryExceptionsOf(t, final); len(exceptions) != 1 ||
+		exceptions[0].Recipient != "reject@example.com" || exceptions[0].Status != "rejected" {
+		t.Errorf("delivery exceptions = %+v, want only the rejected reject@example.com", exceptions)
 	}
 	if !harness.providers.gmail.lastBodyContains("Read on the web") {
 		t.Error("newsletter does not link to the published blog post")
@@ -277,27 +284,139 @@ func TestUnconfirmedGmailSendIsNeverResent(t *testing.T) {
 	if got := harness.providers.gmail.sendCount("bob@example.com"); got != 1 {
 		t.Fatalf("attempts to the unconfirmed recipient = %d, want exactly 1 (never resent)", got)
 	}
+	display, err := harness.display(ctx, flowID)
+	if err != nil {
+		t.Fatalf("display after delivery: %v", err)
+	}
+	var unconfirmed []string
+	for _, exception := range deliveryExceptionsOf(t, display) {
+		if exception.Status == "uncertain" {
+			unconfirmed = append(unconfirmed, exception.Recipient)
+		}
+	}
+	if len(unconfirmed) != 1 || unconfirmed[0] != "bob@example.com" {
+		t.Fatalf("unconfirmed recipients shown in Dex Web = %q, want [bob@example.com]", unconfirmed)
+	}
 }
 
-// TestSubscriberSheetFailureHoldsThenRetrySucceeds holds a missing sheet for
-// an operator and completes after the retry.
-func TestSubscriberSheetFailureHoldsThenRetrySucceeds(t *testing.T) {
+// TestSubscriberListReadFailureHoldsThenRetrySucceeds exhausts the retries of
+// the subscriber list read, holds for an operator, and completes after the
+// retry.
+func TestSubscriberListReadFailureHoldsThenRetrySucceeds(t *testing.T) {
 	ctx := integrationContext(t, 2*time.Minute)
 	harness := newProcessHarness(t, fakeGeminiBehavior{understood: true, hasNotableChanges: true})
-	harness.providers.sheets.setNotFound(true)
+	harness.subscriberReader.setFailing(true)
 	flowID := harness.deliverSlackRequest(ctx, "Blog about connectors", 1)
 	harness.approveCurrentDraft(ctx, flowID)
 	display := harness.waitForStatus(ctx, flowID, techblog.StatusNeedsAttention)
 	if display["failed-stage"] != techblog.StageLoadSubscribers {
 		t.Fatalf("failed stage = %v", display["failed-stage"])
 	}
-	harness.providers.sheets.setNotFound(false)
+	if reason, _ := display["attention-reason"].(string); !strings.Contains(reason, "subscriber list could not be read") {
+		t.Fatalf("attention reason = %q", reason)
+	}
+	if got := harness.subscriberReader.attempts(); got < 2 {
+		t.Fatalf("subscriber list reads = %d, want the read retried before holding", got)
+	}
+	harness.subscriberReader.setFailing(false)
 	if err := harness.invokeAction(ctx, flowID, harness.newsletter.RetryFailedStage,
 		techblog.RetryFailedStageInput{GateKey: display["attention-gate-key"].(string)}); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
 	if result := harness.waitForResult(ctx, flowID); result.Status != techblog.StatusDelivered || result.Delivery.Sent != 3 {
 		t.Fatalf("result = %+v", result)
+	}
+}
+
+// TestSubscriberListKeepsOneCanonicalEntryPerAddress subscribes concurrently,
+// repeats and rejects addresses, and reads the same list after a Worker
+// replacement.
+func TestSubscriberListKeepsOneCanonicalEntryPerAddress(t *testing.T) {
+	ctx := integrationContext(t, 2*time.Minute)
+	harness := newProcessHarness(t, fakeGeminiBehavior{understood: true, hasNotableChanges: true})
+	var group sync.WaitGroup
+	outcomes := make([]techblog.AddNewsletterSubscriberResult, 12)
+	failures := make([]error, len(outcomes))
+	for index := range outcomes {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			// Every other call repeats an earlier address in another case.
+			address := fmt.Sprintf("reader-%d@example.com", index/2)
+			if index%2 == 1 {
+				address = strings.ToUpper(address)
+			}
+			addContext, cancel := context.WithTimeout(ctx, 20*time.Second)
+			defer cancel()
+			outcomes[index], failures[index] = harness.subscriberList.AddNewsletterSubscriber(addContext, address)
+		}()
+	}
+	group.Wait()
+	added := 0
+	for index, outcome := range outcomes {
+		if failures[index] != nil {
+			t.Fatalf("concurrent subscription %d: %v", index, failures[index])
+		}
+		if outcome.Email != fmt.Sprintf("reader-%d@example.com", index/2) {
+			t.Fatalf("subscription %d = %+v, want the canonical address", index, outcome)
+		}
+		if outcome.Outcome == techblog.SubscriptionAdded {
+			added++
+		}
+	}
+	if added != len(outcomes)/2 {
+		t.Fatalf("added = %d, want %d: one per address", added, len(outcomes)/2)
+	}
+	invalid, err := harness.subscriberList.AddNewsletterSubscriber(ctx, "Reader <reader-0@example.com>")
+	if err != nil || invalid.Outcome != techblog.SubscriptionInvalidAddress {
+		t.Fatalf("invalid subscription = %+v, %v", invalid, err)
+	}
+	harness.replaceWorker(ctx)
+	addresses, err := harness.subscriberList.ListNewsletterSubscribers(ctx)
+	if err != nil {
+		t.Fatalf("list subscribers: %v", err)
+	}
+	if len(addresses) != defaultTestAudience+len(outcomes)/2 {
+		t.Fatalf("subscribers after Worker replacement = %q", addresses)
+	}
+	seen := map[string]bool{}
+	for _, address := range addresses {
+		if seen[address] || address != strings.ToLower(address) {
+			t.Fatalf("subscriber list %q has a duplicate or non-canonical address", addresses)
+		}
+		seen[address] = true
+	}
+}
+
+// TestAbandonAfterPartialDeliveryWarnsAgainstReposting abandons a request
+// whose delivery paused after one send and checks that the requester is told
+// not to post it again.
+func TestAbandonAfterPartialDeliveryWarnsAgainstReposting(t *testing.T) {
+	ctx := integrationContext(t, 2*time.Minute)
+	harness := newProcessHarness(t, fakeGeminiBehavior{understood: true, hasNotableChanges: true})
+	harness.providers.gmail.failAuthenticationAfterAccepted(1)
+	flowID := harness.deliverSlackRequest(ctx, "Blog about connectors", 1)
+	harness.approveCurrentDraft(ctx, flowID)
+	display := harness.waitForStatus(ctx, flowID, techblog.StatusNeedsAttention)
+	if display["failed-stage"] != techblog.StageSendNewsletter {
+		t.Fatalf("failed stage = %v, want %s", display["failed-stage"], techblog.StageSendNewsletter)
+	}
+	if err := harness.invokeAction(ctx, flowID, harness.newsletter.AbandonNewsletterRequest, techblog.AbandonNewsletterRequestInput{
+		Reason: stringPointer("Gmail is down for the day."), GateKey: display["attention-gate-key"].(string),
+	}); err != nil {
+		t.Fatalf("abandon: %v", err)
+	}
+	result := harness.waitForResult(ctx, flowID)
+	if result.Status != techblog.StatusDeliveryStopped || result.Delivery.Sent != 1 {
+		t.Fatalf("result = %+v, want delivery-stopped after 1 send", result)
+	}
+	replies := harness.providers.slack.threadReplies(testChannelID)
+	final := replies[len(replies)-1]
+	if !strings.Contains(final, "Do not post this request again") || strings.Contains(final, "Post a new message") {
+		t.Fatalf("final reply invites a repost that would email subscribers twice: %q", final)
+	}
+	if got := harness.providers.gmail.totalAccepted(); got != 1 {
+		t.Fatalf("accepted sends = %d, want 1", got)
 	}
 }
 
@@ -380,9 +499,18 @@ type processHarness struct {
 	client            *dex.Client
 	worker            *dex.Worker
 	newsletter        *techblog.TechBlogNewsletterFlow
+	subscriberList    techblog.NewsletterSubscriberListClient
+	subscriberReader  *failableSubscriberReader
 	teamID            string
 	messageSequence   int
 }
+
+// defaultTestSubscribers seed each harness's subscriber list. Bob repeats in
+// another case and one entry is not an address, so the list keeps
+// defaultTestAudience addresses.
+var defaultTestSubscribers = []string{"alice@example.com", "Bob@Example.com", "reject@example.com", "not an address", "dana@example.org", "bob@example.com"}
+
+const defaultTestAudience = 4
 
 func newProcessHarness(t *testing.T, behavior fakeGeminiBehavior) *processHarness {
 	t.Helper()
@@ -396,7 +524,6 @@ func newProcessHarness(t *testing.T, behavior fakeGeminiBehavior) *processHarnes
 	harness.configuration = config.Default()
 	harness.configuration.Blog.ArtifactDirectory = harness.artifactDirectory
 	harness.configuration.Blog.PublicBaseURL = "https://blog.example.com/posts"
-	harness.configuration.Newsletter.SubscriberSheet = config.SubscriberSheetConfiguration{SpreadsheetID: "sheet-1", Tab: "Subscribers", Range: "A:B"}
 	harness.configuration.Review.ReminderInterval = config.Duration(time.Hour)
 	harness.configuration.Review.MaxReminders = 1
 	if err := harness.configuration.Validate(); err != nil {
@@ -421,7 +548,27 @@ func newProcessHarness(t *testing.T, behavior fakeGeminiBehavior) *processHarnes
 		_ = harness.client.Close()
 		_ = harness.cache.Close()
 	})
+	harness.seedSubscribers(defaultTestSubscribers)
 	return harness
+}
+
+// seedSubscribers starts this harness's subscriber list Flow and subscribes
+// the addresses through its RPC, as the subscription form does. Each call is
+// retried until it succeeds, because Dex can briefly fail to reach a Worker
+// that just replaced the previous test's; both calls are idempotent.
+func (harness *processHarness) seedSubscribers(addresses []string) {
+	harness.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	harness.waitFor(ctx, "subscriber list start", func(attemptContext context.Context) bool {
+		return harness.subscriberList.StartList(attemptContext) == nil
+	})
+	for _, address := range addresses {
+		harness.waitFor(ctx, "seed subscriber "+strconv.Itoa(len(address)), func(attemptContext context.Context) bool {
+			_, err := harness.subscriberList.AddNewsletterSubscriber(attemptContext, address)
+			return err == nil
+		})
+	}
 }
 
 // newRegistry constructs fresh Flow definitions, as a replacement process would.
@@ -434,13 +581,22 @@ func (harness *processHarness) newRegistry() *dex.Registry {
 	}
 	languageModel := techblog.NewLanguageModelGenerationFlow(connections.gemini)
 	research := techblog.NewRepositoryChangeResearchFlow(harness.configuration, connections.github, languageModel)
+	// Each harness owns its subscriber list, so tests sharing one Dex server
+	// never see each other's subscribers.
+	subscriberListFlow := techblog.NewNewsletterSubscriberListFlow(harness.configuration)
+	harness.subscriberList = techblog.NewNewsletterSubscriberListClient(subscriberListFlow,
+		"newsletter-subscriber-list-"+harness.teamID, func() *dex.Client { return harness.client })
+	if harness.subscriberReader == nil {
+		harness.subscriberReader = &failableSubscriberReader{}
+	}
+	harness.subscriberReader.setReader(harness.subscriberList)
 	harness.newsletter = techblog.NewTechBlogNewsletterFlow(techblog.TechBlogNewsletterFlowDependencies{
-		Configuration: harness.configuration, SlackConnection: connections.slack,
-		GoogleSheetsConnection: connections.sheets, GmailConnection: connections.gmail,
-		SubscriberSheet: harness.configuration.Newsletter.SubscriberSheet, BlogArtifactStore: artifactStore,
-		LanguageModelGeneration: languageModel, RepositoryResearch: research,
+		Configuration: harness.configuration, SlackConnection: connections.slack, GmailConnection: connections.gmail,
+		SubscriberList:          harness.subscriberReader,
+		SubscriberListReadRetry: &dex.RetryPolicy{InitialInterval: 100 * time.Millisecond, BackoffCoefficient: 1, MaximumAttempts: 3},
+		BlogArtifactStore:       artifactStore, LanguageModelGeneration: languageModel, RepositoryResearch: research,
 	})
-	registry, err := dex.NewRegistry([]dex.Flow{harness.newsletter, research, languageModel})
+	registry, err := dex.NewRegistry([]dex.Flow{harness.newsletter, research, languageModel, subscriberListFlow})
 	if err != nil {
 		harness.t.Fatalf("register Flows: %v", err)
 	}
@@ -637,6 +793,58 @@ func assertSelfContainedBlogArtifact(t *testing.T, path string, root string) {
 
 func stringPointer(value string) *string { return &value }
 
+// failableSubscriberReader reads the harness's subscriber list and can be told
+// to fail every read, as an unreachable Dex server would.
+type failableSubscriberReader struct {
+	mutex    sync.Mutex
+	reader   techblog.SubscriberListReader
+	failing  bool
+	readings int
+}
+
+func (reader *failableSubscriberReader) setReader(next techblog.SubscriberListReader) {
+	reader.mutex.Lock()
+	defer reader.mutex.Unlock()
+	reader.reader = next
+}
+
+func (reader *failableSubscriberReader) setFailing(failing bool) {
+	reader.mutex.Lock()
+	defer reader.mutex.Unlock()
+	reader.failing = failing
+}
+
+func (reader *failableSubscriberReader) attempts() int {
+	reader.mutex.Lock()
+	defer reader.mutex.Unlock()
+	return reader.readings
+}
+
+func (reader *failableSubscriberReader) ListNewsletterSubscribers(ctx context.Context) ([]string, error) {
+	reader.mutex.Lock()
+	reader.readings++
+	failing, next := reader.failing, reader.reader
+	reader.mutex.Unlock()
+	if failing {
+		return nil, fmt.Errorf("the subscriber list Flow is unreachable")
+	}
+	return next.ListNewsletterSubscribers(ctx)
+}
+
+// deliveryExceptionsOf decodes the Dex Web display of delivery exceptions.
+func deliveryExceptionsOf(t *testing.T, display map[string]any) []struct{ Recipient, Status string } {
+	t.Helper()
+	encoded, err := json.Marshal(display["delivery-exceptions"])
+	if err != nil {
+		t.Fatalf("encode delivery exceptions: %v", err)
+	}
+	var exceptions []struct{ Recipient, Status string }
+	if err := json.Unmarshal(encoded, &exceptions); err != nil {
+		t.Fatalf("decode delivery exceptions %s: %v", encoded, err)
+	}
+	return exceptions
+}
+
 func integrationContext(t *testing.T, timeout time.Duration) context.Context {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -648,7 +856,6 @@ type fakeProviders struct {
 	slack  *fakeSlack
 	github *fakeGitHub
 	gemini *fakeGemini
-	sheets *fakeSheets
 	gmail  *fakeGmail
 }
 
@@ -656,15 +863,13 @@ type testConnections struct {
 	slack  slack.Connection
 	github github.Connection
 	gemini gemini.Connection
-	sheets spreadsheet.Connection
 	gmail  gmail.Connection
 }
 
 func newFakeProviders(t *testing.T, behavior fakeGeminiBehavior) fakeProviders {
 	t.Helper()
 	providers := fakeProviders{
-		slack: newFakeSlack(t), github: newFakeGitHub(t), gemini: newFakeGemini(t, behavior),
-		sheets: newFakeSheets(t), gmail: newFakeGmail(t),
+		slack: newFakeSlack(t), github: newFakeGitHub(t), gemini: newFakeGemini(t, behavior), gmail: newFakeGmail(t),
 	}
 	return providers
 }
@@ -702,14 +907,6 @@ func (providers fakeProviders) connections(t *testing.T) testConnections {
 	geminiClient, err := gemini.New(geminiConfig, sdkgo.StaticCredentialProvider[gemini.Credentials]{geminiReference: {APIKey: sdkgo.NewSecretString("gemini-test-key")}})
 	must(err)
 	connections.gemini, err = gemini.NewConnection(geminiClient, geminiReference)
-	must(err)
-
-	sheetsReference := sdkgo.ConnectionRef{Provider: "google", Name: techblog.GoogleSheetsConnectionName}
-	sheetsConfig := spreadsheet.DefaultConfig()
-	sheetsConfig.Endpoint = providers.sheets.URL
-	sheetsClient, err := spreadsheet.New(sheetsConfig, sdkgo.StaticCredentialProvider[spreadsheet.Credentials]{sheetsReference: {AccessToken: sdkgo.NewSecretString("ya29-sheets")}})
-	must(err)
-	connections.sheets, err = spreadsheet.NewConnection(sheetsClient, sheetsReference)
 	must(err)
 
 	gmailReference := sdkgo.ConnectionRef{Provider: "google", Name: techblog.GmailConnectionName}
@@ -1018,41 +1215,6 @@ func (provider *fakeGemini) lastPromptContains(stage string, text string) bool {
 	return strings.Contains(provider.lastPrompts[stage], text)
 }
 
-type fakeSheets struct {
-	*httptest.Server
-	mutex    sync.Mutex
-	notFound bool
-}
-
-func (provider *fakeSheets) setNotFound(notFound bool) {
-	provider.mutex.Lock()
-	defer provider.mutex.Unlock()
-	provider.notFound = notFound
-}
-
-func newFakeSheets(t *testing.T) *fakeSheets {
-	provider := &fakeSheets{}
-	provider.Server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		provider.mutex.Lock()
-		notFound := provider.notFound
-		provider.mutex.Unlock()
-		if notFound || !strings.HasPrefix(request.URL.Path, "/spreadsheets/sheet-1/values/") {
-			writeJSON(writer, http.StatusNotFound, map[string]any{"error": map[string]any{"code": 404, "status": "NOT_FOUND", "message": "missing"}})
-			return
-		}
-		writeJSON(writer, http.StatusOK, map[string]any{
-			"range": "Subscribers!A1:B7", "majorDimension": "ROWS",
-			"values": [][]string{
-				{"email", "status"}, {"alice@example.com", "active"}, {"Bob@Example.com", ""}, {"bob@example.com", "active"},
-				{"carol@example.com", "unsubscribed"}, {"reject@example.com", "active"}, {"not an address", ""},
-				{"dana@example.org"},
-			},
-		})
-	}))
-	t.Cleanup(provider.Close)
-	return provider
-}
-
 type fakeGmail struct {
 	*httptest.Server
 	mutex                 sync.Mutex
@@ -1061,7 +1223,16 @@ type fakeGmail struct {
 	lastBody              string
 	next                  int
 	authenticationFailure bool
+	// failAfterAccepted, when positive, fails authentication once that many
+	// sends were accepted.
+	failAfterAccepted     int
 	unavailableRecipients map[string]bool
+}
+
+func (provider *fakeGmail) failAuthenticationAfterAccepted(accepted int) {
+	provider.mutex.Lock()
+	defer provider.mutex.Unlock()
+	provider.failAfterAccepted = accepted
 }
 
 func (provider *fakeGmail) setAuthenticationFailure(failing bool) {
@@ -1123,6 +1294,13 @@ func newFakeGmail(t *testing.T) *fakeGmail {
 		provider.next++
 		identifier := provider.next
 		authenticationFailure := provider.authenticationFailure
+		if provider.failAfterAccepted > 0 {
+			acceptedSoFar := 0
+			for _, count := range provider.accepted {
+				acceptedSoFar += count
+			}
+			authenticationFailure = authenticationFailure || acceptedSoFar >= provider.failAfterAccepted
+		}
 		unavailable := provider.unavailableRecipients[recipient]
 		if !authenticationFailure && !unavailable && !strings.HasPrefix(recipient, "reject@") {
 			provider.accepted[recipient]++

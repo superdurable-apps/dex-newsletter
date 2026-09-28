@@ -65,10 +65,12 @@ type ProcessConfiguration struct {
 
 // StageModelConfiguration selects the model and generation settings for one
 // language-model stage. Provider overrides LanguageModelConfiguration.Provider
-// for this stage only.
+// for this stage only. A blank Model uses the model chosen on the provider's
+// Dex Web Connection, so a model can be switched there without editing this
+// file; a Model set here overrides the Connection for this stage only.
 type StageModelConfiguration struct {
 	Provider        string   `json:"provider,omitempty"`
-	Model           string   `json:"model"`
+	Model           string   `json:"model,omitempty"`
 	Temperature     *float64 `json:"temperature,omitempty"`
 	MaxOutputTokens int      `json:"maxOutputTokens"`
 	ThinkingBudget  *int     `json:"thinkingBudget,omitempty"`
@@ -125,24 +127,12 @@ type BlogConfiguration struct {
 	ArtifactDirectory string `json:"artifactDirectory"`
 }
 
-// SubscriberSheetConfiguration locates the subscriber list. Dex Web operation
-// configuration for the subscriber-sheet Connector Step takes precedence; this
-// value is the fallback when Dex Web has not configured that Step.
-type SubscriberSheetConfiguration struct {
-	SpreadsheetID string `json:"spreadsheetId"`
-	Tab           string `json:"tab"`
-	Range         string `json:"range"`
-}
-
-// NewsletterConfiguration configures the subscriber sheet layout and
-// delivery bounds.
+// NewsletterConfiguration bounds the subscriber list and delivery.
+// MaxRecipients caps both the subscriber list, which rejects new
+// subscriptions once full, and each newsletter's recipients.
 type NewsletterConfiguration struct {
-	SubscriberSheet          SubscriberSheetConfiguration `json:"subscriberSheet"`
-	EmailColumnHeader        string                       `json:"emailColumnHeader"`
-	StatusColumnHeader       string                       `json:"statusColumnHeader"`
-	UnsubscribedStatusValues []string                     `json:"unsubscribedStatusValues"`
-	MaxRecipients            int                          `json:"maxRecipients"`
-	Footer                   string                       `json:"footer"`
+	MaxRecipients int    `json:"maxRecipients"`
+	Footer        string `json:"footer"`
 }
 
 // ReviewConfiguration configures the editorial approval gate.
@@ -152,11 +142,6 @@ type ReviewConfiguration struct {
 	MaxReminders     int      `json:"maxReminders"`
 	MaxRevisions     int      `json:"maxRevisions"`
 }
-
-// DefaultGeminiModel is the model every default stage uses. Gemini 2.x
-// models are closed to new Google AI Studio projects, so the defaults use a
-// Gemini 3 model any new API key can call.
-const DefaultGeminiModel = "gemini-3.5-flash-lite"
 
 // Default returns a complete configuration for the superdurable public
 // repositories with Gemini as the language-model provider.
@@ -173,11 +158,11 @@ func Default() ProcessConfiguration {
 		DexWebURL:       "http://127.0.0.1:8802",
 		LanguageModel: LanguageModelConfiguration{
 			Provider:            ProviderGemini,
-			InterpretRequest:    StageModelConfiguration{Model: DefaultGeminiModel, MaxOutputTokens: 8192},
-			SummarizeRepository: StageModelConfiguration{Model: DefaultGeminiModel, MaxOutputTokens: 16384},
-			SynthesizeResearch:  StageModelConfiguration{Model: DefaultGeminiModel, MaxOutputTokens: 16384},
-			DraftBlogPost:       StageModelConfiguration{Model: DefaultGeminiModel, MaxOutputTokens: 32768},
-			DraftNewsletter:     StageModelConfiguration{Model: DefaultGeminiModel, MaxOutputTokens: 16384},
+			InterpretRequest:    StageModelConfiguration{MaxOutputTokens: 8192},
+			SummarizeRepository: StageModelConfiguration{MaxOutputTokens: 16384},
+			SynthesizeResearch:  StageModelConfiguration{MaxOutputTokens: 16384},
+			DraftBlogPost:       StageModelConfiguration{MaxOutputTokens: 32768},
+			DraftNewsletter:     StageModelConfiguration{MaxOutputTokens: 16384},
 		},
 		Research: ResearchConfiguration{
 			DefaultLookbackDays:                7,
@@ -198,7 +183,7 @@ func Default() ProcessConfiguration {
 				},
 				{
 					Owner: "superdurable", Name: "dex-connectors-library",
-					Description: "Official Dex connectors (Slack, Gmail, Google Sheets, GitHub, OpenAI, HTTP), the connector SDK, manifests, and code generation.",
+					Description: "Official Dex connectors (Slack, Gmail, Google Sheets, GitHub, and language-model providers such as Gemini, OpenAI, and Claude), the connector SDK, manifests, and code generation.",
 					Topics:      []string{"connectors", "integrations", "triggers", "connector sdk"},
 					PathHints:   []string{"connectors/", "sdkgo/", "sdk/", "cmd/connectorctl/", "docs/"},
 				},
@@ -223,12 +208,8 @@ func Default() ProcessConfiguration {
 			ArtifactDirectory: "artifacts",
 		},
 		Newsletter: NewsletterConfiguration{
-			SubscriberSheet:          SubscriberSheetConfiguration{Range: "A:B"},
-			EmailColumnHeader:        "email",
-			StatusColumnHeader:       "status",
-			UnsubscribedStatusValues: []string{"unsubscribed", "opted-out", "bounced"},
-			MaxRecipients:            500,
-			Footer:                   "You are receiving this because you subscribed to Dex engineering updates.",
+			MaxRecipients: 500,
+			Footer:        "You are receiving this because you subscribed to Dex engineering updates.",
 		},
 		Review: ReviewConfiguration{
 			Required:         true,
@@ -250,6 +231,9 @@ func Load(path string) (ProcessConfiguration, error) {
 	if err != nil {
 		return ProcessConfiguration{}, fmt.Errorf("read process configuration: %w", err)
 	}
+	if err := rejectRemovedFields(contents); err != nil {
+		return ProcessConfiguration{}, fmt.Errorf("process configuration %s: %w", path, err)
+	}
 	decoder := json.NewDecoder(bytes.NewReader(contents))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&configuration); err != nil {
@@ -262,6 +246,33 @@ func Load(path string) (ProcessConfiguration, error) {
 		return ProcessConfiguration{}, fmt.Errorf("process configuration %s: %w", path, err)
 	}
 	return configuration, nil
+}
+
+// removedNewsletterFields are the Google Sheets subscriber settings that the
+// Dex subscriber list replaced.
+var removedNewsletterFields = []string{"subscriberSheet", "emailColumnHeader", "statusColumnHeader", "unsubscribedStatusValues"}
+
+// rejectRemovedFields explains a configuration file written for the Google
+// Sheets subscriber list instead of failing with a bare unknown-field error.
+// Malformed JSON is left for the strict decoder to report.
+func rejectRemovedFields(contents []byte) error {
+	var document struct {
+		Newsletter map[string]json.RawMessage `json:"newsletter"`
+	}
+	if json.Unmarshal(contents, &document) != nil {
+		return nil
+	}
+	var present []string
+	for _, field := range removedNewsletterFields {
+		if _, found := document.Newsletter[field]; found {
+			present = append(present, "newsletter."+field)
+		}
+	}
+	if len(present) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s no longer exist: newsletter subscribers now live in Dex (the NewsletterSubscriberListFlow), not a Google Sheet; delete them from the file",
+		strings.Join(present, ", "))
 }
 
 // Validate reports every invalid field.
@@ -292,8 +303,8 @@ func (configuration ProcessConfiguration) Validate() error {
 		if !isSupportedProvider(provider) {
 			add("languageModel.%s provider %q is not one of %v", entry.name, provider, SupportedLanguageModelProviders)
 		}
-		if strings.TrimSpace(entry.stage.Model) == "" {
-			add("languageModel.%s.model is required", entry.name)
+		if entry.stage.Model != strings.TrimSpace(entry.stage.Model) {
+			add("languageModel.%s.model must not have leading or trailing spaces", entry.name)
 		}
 		if entry.stage.MaxOutputTokens < 256 || entry.stage.MaxOutputTokens > 65536 {
 			add("languageModel.%s.maxOutputTokens must be between 256 and 65536", entry.name)
@@ -366,14 +377,8 @@ func (configuration ProcessConfiguration) Validate() error {
 	}
 
 	newsletter := configuration.Newsletter
-	if strings.TrimSpace(newsletter.EmailColumnHeader) == "" {
-		add("newsletter.emailColumnHeader is required")
-	}
 	if newsletter.MaxRecipients < 1 || newsletter.MaxRecipients > 2000 {
 		add("newsletter.maxRecipients must be between 1 and 2000 (Gmail daily sending limits)")
-	}
-	if strings.ContainsAny(newsletter.SubscriberSheet.Tab, "!'") {
-		add("newsletter.subscriberSheet.tab must not contain ! or '")
 	}
 
 	review := configuration.Review

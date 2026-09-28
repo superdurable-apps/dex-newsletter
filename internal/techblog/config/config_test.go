@@ -179,7 +179,7 @@ func TestValidateReportsInvalidFields(t *testing.T) {
 	}{
 		{"unsupported provider", func(c *ProcessConfiguration) { c.LanguageModel.Provider = "openai" }, "provider"},
 		{"stage provider override", func(c *ProcessConfiguration) { c.LanguageModel.DraftBlogPost.Provider = "unknown" }, "draftBlogPost provider"},
-		{"missing model", func(c *ProcessConfiguration) { c.LanguageModel.InterpretRequest.Model = "" }, "interpretRequest.model"},
+		{"padded model", func(c *ProcessConfiguration) { c.LanguageModel.InterpretRequest.Model = " gemini-3.5-flash " }, "interpretRequest.model"},
 		{"output tokens", func(c *ProcessConfiguration) { c.LanguageModel.DraftNewsletter.MaxOutputTokens = 10 }, "maxOutputTokens"},
 		{"empty catalog", func(c *ProcessConfiguration) { c.Research.Repositories = nil }, "at least one repository"},
 		{"bad owner", func(c *ProcessConfiguration) { c.Research.Repositories[0].Owner = "bad owner/" }, "GitHub owner"},
@@ -189,7 +189,6 @@ func TestValidateReportsInvalidFields(t *testing.T) {
 		}, "duplicates"},
 		{"default above max", func(c *ProcessConfiguration) { c.Research.DefaultLookbackDays = 120 }, "defaultLookbackDays"},
 		{"recipient cap", func(c *ProcessConfiguration) { c.Newsletter.MaxRecipients = 5000 }, "maxRecipients"},
-		{"tab quoting", func(c *ProcessConfiguration) { c.Newsletter.SubscriberSheet.Tab = "Sub'scribers" }, "tab"},
 		{"reminder interval", func(c *ProcessConfiguration) { c.Review.ReminderInterval = Duration(time.Second) }, "reminderInterval"},
 		{"relative base URL", func(c *ProcessConfiguration) { c.Blog.PublicBaseURL = "/posts" }, "publicBaseUrl"},
 	}
@@ -220,5 +219,36 @@ func TestFindRepositoryIsCaseInsensitive(t *testing.T) {
 	entry, found := Default().Research.FindRepository("SuperDurable", "DEX")
 	if !found || entry.Name != "dex" {
 		t.Fatalf("FindRepository = %+v, %v", entry, found)
+	}
+}
+
+// TestDefaultStagesLeaveTheModelToTheConnection keeps every default stage on
+// the model chosen on the provider's Dex Web Connection.
+func TestDefaultStagesLeaveTheModelToTheConnection(t *testing.T) {
+	configuration := Default()
+	for name, stage := range stageFields(&configuration.LanguageModel) {
+		if stage.Model != "" {
+			t.Errorf("default %s model = %q, want blank so the Connection's model applies", name, stage.Model)
+		}
+	}
+	if err := configuration.Validate(); err != nil {
+		t.Fatalf("Default() is invalid: %v", err)
+	}
+}
+
+func TestLoadExplainsRemovedSubscriberSheetFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.json")
+	contents := `{"newsletter":{"subscriberSheet":{"spreadsheetId":"sheet","tab":"Subscribers","range":"A:B"},"emailColumnHeader":"email","maxRecipients":10}}`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load accepted removed subscriber sheet fields")
+	}
+	for _, want := range []string{"newsletter.subscriberSheet", "newsletter.emailColumnHeader", "NewsletterSubscriberListFlow"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Load error %q does not mention %q", err, want)
+		}
 	}
 }

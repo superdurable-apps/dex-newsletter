@@ -33,7 +33,7 @@ func run() error {
 		return err
 	}
 	defer runtime.Close()
-	apiHandler, err := api.NewHandler(api.ApplicationInfo{Name: runtime.ApplicationName(), DexWebURL: runtime.DexWebURL()})
+	apiHandler, err := api.NewHandler(api.ApplicationInfo{Name: runtime.ApplicationName(), DexWebURL: runtime.DexWebURL()}, runtime.NewsletterSubscriptions())
 	if err != nil {
 		return fmt.Errorf("create OpenAPI handler: %w", err)
 	}
@@ -59,9 +59,15 @@ func run() error {
 	return server.Shutdown(shutdown)
 }
 
+// maximumAPIRequestBytes bounds every API request body; the largest valid
+// request, one subscription, is well under 1 KiB.
+const maximumAPIRequestBytes = 16 << 10
+
 func applicationHandler(apiHandler http.Handler) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/api/", apiHandler)
+	mux.Handle("/api/", http.MaxBytesHandler(apiHandler, maximumAPIRequestBytes))
+	// Mock controls exist only on the mock server (make mock).
+	mux.Handle("/__mock__/", http.NotFoundHandler())
 	mux.Handle("/", staticHandler("web/dist"))
 	return mux
 }

@@ -1,6 +1,6 @@
 // Package runtime composes the tech blog newsletter Process: configuration,
-// connector connections, Flows, the Dex Worker and Client, and the Slack
-// request Trigger.
+// connector connections, Flows, the Dex Worker and Client, the Slack request
+// Trigger, and the newsletter subscriber list behind the subscription API.
 package runtime
 
 import (
@@ -14,12 +14,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/superdurable-apps/dex-newsletter/internal/api"
 	"github.com/superdurable-apps/dex-newsletter/internal/techblog"
 	"github.com/superdurable-apps/dex-newsletter/internal/techblog/config"
 	github "github.com/superdurable/dex-connectors-library/connectors/github"
 	"github.com/superdurable/dex-connectors-library/connectors/google/gemini"
 	"github.com/superdurable/dex-connectors-library/connectors/google/gmail"
-	"github.com/superdurable/dex-connectors-library/connectors/google/spreadsheet"
 	"github.com/superdurable/dex-connectors-library/connectors/slack"
 	"github.com/superdurable/dex-connectors-library/sdkgo"
 	"github.com/superdurable/dex-connectors-library/sdkgo/localconfig"
@@ -31,17 +31,22 @@ import (
 // configuration file. Without it the built-in defaults are used.
 const ProcessConfigurationFileEnvironmentVariable = "TECH_BLOG_CONFIG_FILE"
 
-// Runtime owns the Dex Worker, Client, blob cache, and Slack Trigger runner.
+// subscriptionTimeout bounds one subscription request's call into Dex.
+const subscriptionTimeout = 10 * time.Second
+
+// Runtime owns the Dex Worker, Client, blob cache, Slack Trigger runner, and
+// the client of the newsletter subscriber list Flow.
 type Runtime struct {
-	configuration config.ProcessConfiguration
-	logger        *slog.Logger
-	worker        *dex.Worker
-	client        *dex.Client
-	cache         *blobcache.Cache
-	triggerRunner *slack.MessageTriggerRunner
-	stopTriggers  context.CancelFunc
-	triggersDone  chan struct{}
-	closeOnce     sync.Once
+	configuration  config.ProcessConfiguration
+	logger         *slog.Logger
+	worker         *dex.Worker
+	client         *dex.Client
+	cache          *blobcache.Cache
+	subscriberList techblog.NewsletterSubscriberListClient
+	triggerRunner  *slack.MessageTriggerRunner
+	stopBackground context.CancelFunc
+	backgroundDone chan struct{}
+	closeOnce      sync.Once
 }
 
 // New loads configuration and connections and constructs every component. A
@@ -59,17 +64,22 @@ func New(logger *slog.Logger) (*Runtime, error) {
 	}
 	languageModel := techblog.NewLanguageModelGenerationFlow(connections.gemini)
 	research := techblog.NewRepositoryChangeResearchFlow(configuration, connections.github, languageModel)
+	subscriberListFlow := techblog.NewNewsletterSubscriberListFlow(configuration)
+	// The Dex Client needs the registry, and the registry needs the Flows, so
+	// the subscriber list client resolves the Client when it is first called.
+	var dexClient *dex.Client
+	subscriberList := techblog.NewNewsletterSubscriberListClient(subscriberListFlow, techblog.NewsletterSubscriberListFlowID,
+		func() *dex.Client { return dexClient })
 	newsletter := techblog.NewTechBlogNewsletterFlow(techblog.TechBlogNewsletterFlowDependencies{
 		Configuration:           configuration,
 		SlackConnection:         connections.slack,
-		GoogleSheetsConnection:  connections.sheets,
 		GmailConnection:         connections.gmail,
-		SubscriberSheet:         loadSubscriberSheet(store, configuration, logger),
+		SubscriberList:          subscriberList,
 		BlogArtifactStore:       artifactStore,
 		LanguageModelGeneration: languageModel,
 		RepositoryResearch:      research,
 	})
-	registry, err := dex.NewRegistry([]dex.Flow{newsletter, research, languageModel})
+	registry, err := dex.NewRegistry([]dex.Flow{newsletter, research, languageModel, subscriberListFlow})
 	if err != nil {
 		return nil, fmt.Errorf("register tech blog Flows: %w", err)
 	}
@@ -94,7 +104,8 @@ func New(logger *slog.Logger) (*Runtime, error) {
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("create Dex Client: %w", err), stopWorker(worker), cache.Close())
 	}
-	runtime := &Runtime{configuration: configuration, logger: logger, worker: worker, client: client, cache: cache}
+	dexClient = client
+	runtime := &Runtime{configuration: configuration, logger: logger, worker: worker, client: client, cache: cache, subscriberList: subscriberList}
 	runtime.triggerRunner, err = newSlackRequestTriggerRunner(store, client, newsletter, logger)
 	if err != nil {
 		return nil, errors.Join(err, runtime.Close())
@@ -111,23 +122,33 @@ func (runtime *Runtime) DexWebURL() string { return runtime.configuration.DexWeb
 // Client exposes the Dex Client for integration tests and tools.
 func (runtime *Runtime) Client() *dex.Client { return runtime.client }
 
-// StartWorker starts the Worker and, once Dex answers a health check, the
-// Slack Trigger runner. The channel receives the first fatal error.
+// NewsletterSubscriptions adds subscription-form addresses to the newsletter
+// subscriber list Flow.
+func (runtime *Runtime) NewsletterSubscriptions() api.NewsletterSubscriptions {
+	return newsletterSubscriptions{list: runtime.subscriberList}
+}
+
+// StartWorker starts the Worker and, once Dex answers a health check, starts
+// the newsletter subscriber list Flow and then the Slack Trigger runner. The
+// channel receives the first fatal error.
 func (runtime *Runtime) StartWorker() <-chan error {
 	result := make(chan error, 2)
 	go func() { result <- runtime.worker.Start() }()
-	if runtime.triggerRunner == nil {
-		return result
-	}
-	triggerContext, cancel := context.WithCancel(context.Background())
-	runtime.stopTriggers = cancel
-	runtime.triggersDone = make(chan struct{})
+	backgroundContext, cancel := context.WithCancel(context.Background())
+	runtime.stopBackground = cancel
+	runtime.backgroundDone = make(chan struct{})
 	go func() {
-		defer close(runtime.triggersDone)
-		if err := waitForDexServer(triggerContext, runtime.client.HealthCheck, runtime.logger); err != nil {
+		defer close(runtime.backgroundDone)
+		if err := waitForDexServer(backgroundContext, runtime.client.HealthCheck, runtime.logger); err != nil {
 			return
 		}
-		if err := runtime.triggerRunner.Run(triggerContext); err != nil && !errors.Is(err, context.Canceled) {
+		if err := startSubscriberList(backgroundContext, runtime.subscriberList.StartList, runtime.logger); err != nil {
+			return
+		}
+		if runtime.triggerRunner == nil {
+			return
+		}
+		if err := runtime.triggerRunner.Run(backgroundContext); err != nil && !errors.Is(err, context.Canceled) {
 			result <- fmt.Errorf("run Slack request Trigger: %w", err)
 		}
 	}()
@@ -138,9 +159,9 @@ func (runtime *Runtime) StartWorker() <-chan error {
 func (runtime *Runtime) Close() error {
 	var err error
 	runtime.closeOnce.Do(func() {
-		if runtime.stopTriggers != nil {
-			runtime.stopTriggers()
-			<-runtime.triggersDone
+		if runtime.stopBackground != nil {
+			runtime.stopBackground()
+			<-runtime.backgroundDone
 		}
 		err = errors.Join(stopWorker(runtime.worker), runtime.client.Close(), runtime.cache.Close())
 	})
@@ -178,7 +199,6 @@ type processConnections struct {
 	slack  slack.Connection
 	github github.Connection
 	gemini gemini.Connection
-	sheets spreadsheet.Connection
 	gmail  gmail.Connection
 }
 
@@ -195,10 +215,6 @@ func newProcessConnections(store *localconfig.Store, logger *slog.Logger) (proce
 	}
 	if connections.gemini, err = localOrUnconfigured(store, logger, gemini.ConnectorID, techblog.GeminiConnectionName,
 		gemini.NewLocalConnection, newUnconfiguredGeminiConnection); err != nil {
-		return processConnections{}, err
-	}
-	if connections.sheets, err = localOrUnconfigured(store, logger, spreadsheet.ConnectorID, techblog.GoogleSheetsConnectionName,
-		spreadsheet.NewLocalConnection, newUnconfiguredGoogleSheetsConnection); err != nil {
 		return processConnections{}, err
 	}
 	if connections.gmail, err = localOrUnconfigured(store, logger, gmail.ConnectorID, techblog.GmailConnectionName,
@@ -230,14 +246,6 @@ func newUnconfiguredGeminiConnection(credentials sdkgo.CredentialProvider[gemini
 		return gemini.Connection{}, err
 	}
 	return gemini.NewConnection(client, sdkgo.ConnectionRef{Provider: "google", Name: techblog.GeminiConnectionName})
-}
-
-func newUnconfiguredGoogleSheetsConnection(credentials sdkgo.CredentialProvider[spreadsheet.Credentials]) (spreadsheet.Connection, error) {
-	client, err := spreadsheet.New(spreadsheet.DefaultConfig(), credentials)
-	if err != nil {
-		return spreadsheet.Connection{}, err
-	}
-	return spreadsheet.NewConnection(client, sdkgo.ConnectionRef{Provider: "google", Name: techblog.GoogleSheetsConnectionName})
 }
 
 func newUnconfiguredGmailConnection(credentials sdkgo.CredentialProvider[gmail.Credentials]) (gmail.Connection, error) {
@@ -313,17 +321,6 @@ func loadConnectorStore(logger *slog.Logger) (*localconfig.Store, error) {
 	return store, nil
 }
 
-func loadSubscriberSheet(store *localconfig.Store, configuration config.ProcessConfiguration, logger *slog.Logger) config.SubscriberSheetConfiguration {
-	if store != nil {
-		loaded, err := localconfig.LoadOperationConfiguration[config.SubscriberSheetConfiguration](store, techblog.SubscriberSheetConfigurationRef())
-		if err == nil {
-			return loaded.Value
-		}
-		logger.Info("subscriber sheet Step is not configured in Dex Web; using the process configuration file", "error", err.Error())
-	}
-	return configuration.Newsletter.SubscriberSheet
-}
-
 func newSlackRequestTriggerRunner(
 	store *localconfig.Store,
 	client *dex.Client,
@@ -359,6 +356,65 @@ func newSlackRequestTriggerRunner(
 		return nil, fmt.Errorf("create Slack request Trigger runner: %w", err)
 	}
 	return runner, nil
+}
+
+// subscriberAdder adds one address to the newsletter subscriber list Flow.
+type subscriberAdder interface {
+	AddNewsletterSubscriber(ctx context.Context, email string) (techblog.AddNewsletterSubscriberResult, error)
+}
+
+// newsletterSubscriptions adapts the subscriber list Flow to the HTTP API.
+type newsletterSubscriptions struct {
+	list subscriberAdder
+}
+
+// Subscribe maps the list Flow's typed outcome to the API's errors. Errors
+// never include the address.
+func (subscriptions newsletterSubscriptions) Subscribe(ctx context.Context, email string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, subscriptionTimeout)
+	defer cancel()
+	result, err := subscriptions.list.AddNewsletterSubscriber(ctx, email)
+	if err != nil {
+		return "", fmt.Errorf("add a newsletter subscriber: %w", err)
+	}
+	switch result.Outcome {
+	case techblog.SubscriptionAdded, techblog.SubscriptionAlreadySubscribed:
+		return result.Email, nil
+	case techblog.SubscriptionInvalidAddress:
+		return "", api.ErrInvalidEmailAddress
+	case techblog.SubscriptionListFull:
+		return "", api.ErrSubscriberListFull
+	default:
+		return "", fmt.Errorf("unknown subscription outcome %q", result.Outcome)
+	}
+}
+
+// startSubscriberList starts the subscriber list Flow, retrying with backoff
+// until it succeeds or ctx ends. Until it runs, subscriptions answer 503 and
+// deliveries retry their read, then hold for attention.
+func startSubscriberList(ctx context.Context, start func(context.Context) error, logger *slog.Logger) error {
+	delay := 250 * time.Millisecond
+	for attempt := 1; ; attempt++ {
+		attemptContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+		err := start(attemptContext)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		logger.Error("could not start the newsletter subscriber list Flow; retrying",
+			"flow_id", techblog.NewsletterSubscriberListFlowID, "attempt", attempt, "delay", delay, "error", err.Error())
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		delay = min(2*delay, 30*time.Second)
+	}
 }
 
 // waitForDexServer returns once Dex answers a health check, backing off from

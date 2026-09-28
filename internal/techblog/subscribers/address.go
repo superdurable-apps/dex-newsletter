@@ -21,7 +21,7 @@ const (
 // domain literals out regardless of how permissive net/mail is.
 const forbiddenAddressCharacters = `"(),:;<>[\]`
 
-// canonicalEmailAddress validates one trimmed cell as a single bare addr-spec
+// canonicalEmailAddress validates one trimmed address as a single bare addr-spec
 // under the package address policy and returns its lowercased form.
 func canonicalEmailAddress(candidate string) (string, bool) {
 	if candidate == "" || len(candidate) > maximumAddressLength {

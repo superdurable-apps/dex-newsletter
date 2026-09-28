@@ -10,6 +10,12 @@ import (
 	"github.com/ogen-go/ogen/uri"
 )
 
+var (
+	rn3AllowedHeaders = map[string]string{
+		"POST": "Content-Type",
+	}
+)
+
 func (s *Server) cutPrefix(path string) (string, bool) {
 	prefix := s.cfg.Prefix
 	if prefix == "" {
@@ -48,29 +54,68 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		switch elem[0] {
-		case '/': // Prefix: "/api/application-info"
+		case '/': // Prefix: "/api/"
 
-			if l := len("/api/application-info"); len(elem) >= l && elem[0:l] == "/api/application-info" {
+			if l := len("/api/"); len(elem) >= l && elem[0:l] == "/api/" {
 				elem = elem[l:]
 			} else {
 				break
 			}
 
 			if len(elem) == 0 {
-				// Leaf node.
-				switch r.Method {
-				case "GET":
-					s.handleGetApplicationInfoRequest([0]string{}, elemIsEscaped, w, r)
-				default:
-					s.notAllowed(w, r, notAllowedParams{
-						allowedMethods: "GET",
-						allowedHeaders: nil,
-						acceptPost:     "",
-						acceptPatch:    "",
-					})
+				break
+			}
+			switch elem[0] {
+			case 'a': // Prefix: "application-info"
+
+				if l := len("application-info"); len(elem) >= l && elem[0:l] == "application-info" {
+					elem = elem[l:]
+				} else {
+					break
 				}
 
-				return
+				if len(elem) == 0 {
+					// Leaf node.
+					switch r.Method {
+					case "GET":
+						s.handleGetApplicationInfoRequest([0]string{}, elemIsEscaped, w, r)
+					default:
+						s.notAllowed(w, r, notAllowedParams{
+							allowedMethods: "GET",
+							allowedHeaders: nil,
+							acceptPost:     "",
+							acceptPatch:    "",
+						})
+					}
+
+					return
+				}
+
+			case 'n': // Prefix: "newsletter/subscriptions"
+
+				if l := len("newsletter/subscriptions"); len(elem) >= l && elem[0:l] == "newsletter/subscriptions" {
+					elem = elem[l:]
+				} else {
+					break
+				}
+
+				if len(elem) == 0 {
+					// Leaf node.
+					switch r.Method {
+					case "POST":
+						s.handleSubscribeToNewsletterRequest([0]string{}, elemIsEscaped, w, r)
+					default:
+						s.notAllowed(w, r, notAllowedParams{
+							allowedMethods: "POST",
+							allowedHeaders: rn3AllowedHeaders,
+							acceptPost:     "application/json",
+							acceptPatch:    "",
+						})
+					}
+
+					return
+				}
+
 			}
 
 		}
@@ -159,29 +204,68 @@ func (s *Server) FindPath(method string, u *url.URL) (r Route, _ bool) {
 			break
 		}
 		switch elem[0] {
-		case '/': // Prefix: "/api/application-info"
+		case '/': // Prefix: "/api/"
 
-			if l := len("/api/application-info"); len(elem) >= l && elem[0:l] == "/api/application-info" {
+			if l := len("/api/"); len(elem) >= l && elem[0:l] == "/api/" {
 				elem = elem[l:]
 			} else {
 				break
 			}
 
 			if len(elem) == 0 {
-				// Leaf node.
-				switch method {
-				case "GET":
-					r.name = GetApplicationInfoOperation
-					r.summary = ""
-					r.operationID = "getApplicationInfo"
-					r.operationGroup = ""
-					r.pathPattern = "/api/application-info"
-					r.args = args
-					r.count = 0
-					return r, true
-				default:
-					return
+				break
+			}
+			switch elem[0] {
+			case 'a': // Prefix: "application-info"
+
+				if l := len("application-info"); len(elem) >= l && elem[0:l] == "application-info" {
+					elem = elem[l:]
+				} else {
+					break
 				}
+
+				if len(elem) == 0 {
+					// Leaf node.
+					switch method {
+					case "GET":
+						r.name = GetApplicationInfoOperation
+						r.summary = ""
+						r.operationID = "getApplicationInfo"
+						r.operationGroup = ""
+						r.pathPattern = "/api/application-info"
+						r.args = args
+						r.count = 0
+						return r, true
+					default:
+						return
+					}
+				}
+
+			case 'n': // Prefix: "newsletter/subscriptions"
+
+				if l := len("newsletter/subscriptions"); len(elem) >= l && elem[0:l] == "newsletter/subscriptions" {
+					elem = elem[l:]
+				} else {
+					break
+				}
+
+				if len(elem) == 0 {
+					// Leaf node.
+					switch method {
+					case "POST":
+						r.name = SubscribeToNewsletterOperation
+						r.summary = ""
+						r.operationID = "subscribeToNewsletter"
+						r.operationGroup = ""
+						r.pathPattern = "/api/newsletter/subscriptions"
+						r.args = args
+						r.count = 0
+						return r, true
+					default:
+						return
+					}
+				}
+
 			}
 
 		}

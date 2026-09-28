@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,12 +14,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/superdurable-apps/dex-newsletter/internal/api"
 	"github.com/superdurable-apps/dex-newsletter/internal/techblog"
 	"github.com/superdurable-apps/dex-newsletter/internal/techblog/config"
 	github "github.com/superdurable/dex-connectors-library/connectors/github"
 	"github.com/superdurable/dex-connectors-library/connectors/google/gemini"
 	"github.com/superdurable/dex-connectors-library/connectors/google/gmail"
-	"github.com/superdurable/dex-connectors-library/connectors/google/spreadsheet"
 	"github.com/superdurable/dex-connectors-library/connectors/slack"
 	"github.com/superdurable/dex-connectors-library/sdkgo"
 	"github.com/superdurable/dex-connectors-library/sdkgo/localconfig"
@@ -30,7 +31,6 @@ const (
 	connectionFileUnsetMessage     = "no connector connection file; set it to the path shown by Dex Web Connections"
 	connectionFileMissingMessage   = "connector connection file does not exist yet; configure connections in Dex Web Connections and restart the application"
 	connectionNotConfiguredMessage = "connector connection is not configured; configure it in Dex Web Connections"
-	subscriberSheetFallbackMessage = "subscriber sheet Step is not configured in Dex Web; using the process configuration file"
 	slackTriggerMissingMessage     = "Slack request Trigger is not configured; configure the channel in Dex Web Connections"
 )
 
@@ -168,7 +168,7 @@ func TestLoadConnectorStoreKeepsOtherLoadErrorsFatal(t *testing.T) {
 		},
 		"malformed use configurations file": {
 			prepare: func(t *testing.T, directory string) string {
-				path := writeConnectionsFile(t, directory, googleSheetsConnectionFixture)
+				path := writeConnectionsFile(t, directory, slackConnectionFixture)
 				writePrivateFile(t, filepath.Join(directory, localconfig.UseConfigurationsFileName), []byte(`{"schemaVersion":`))
 				return path
 			},
@@ -222,7 +222,7 @@ func TestLoadConnectorStoreLoadsConnectionFile(t *testing.T) {
 }
 
 func TestNewProcessConnectionsFallsBackOnlyForMissingConnections(t *testing.T) {
-	store := loadStoreFile(t, writeConnectionsFile(t, t.TempDir(), slackConnectionFixture, googleSheetsConnectionFixture))
+	store := loadStoreFile(t, writeConnectionsFile(t, t.TempDir(), slackConnectionFixture))
 	logger, logs := newLogRecorder()
 
 	if _, err := newProcessConnections(store, logger); err != nil {
@@ -247,7 +247,7 @@ func TestNewProcessConnectionsFallsBackOnlyForMissingConnections(t *testing.T) {
 		gmail.ConnectorID:  techblog.GmailConnectionName,
 	}
 	if !reflect.DeepEqual(unconfigured, want) {
-		t.Errorf("unconfigured connections = %v; want %v (Slack and Google Sheets are configured)", unconfigured, want)
+		t.Errorf("unconfigured connections = %v; want %v (only Slack is configured)", unconfigured, want)
 	}
 	if records := logs.records(t); len(records) != len(want) {
 		t.Errorf("got %d log records; want only the %d not-configured warnings: %v", len(records), len(want), records)
@@ -336,68 +336,6 @@ func TestLocalOrUnconfiguredFallbackCredentialsPointToDexWeb(t *testing.T) {
 	}
 }
 
-func TestLoadSubscriberSheetPrefersDexWebUseConfiguration(t *testing.T) {
-	directory := t.TempDir()
-	path := writeConnectionsFile(t, directory, googleSheetsConnectionFixture)
-	writeUseConfigurationsFile(t, directory, techblog.SubscriberSheetConfigurationRef(), map[string]any{
-		"spreadsheetId": "dex-web-sheet", "tab": "Subscribers", "range": "A:C",
-	})
-	store := loadStoreFile(t, path)
-	logger, logs := newLogRecorder()
-
-	got := loadSubscriberSheet(store, processConfigurationWithSubscriberSheet(), logger)
-	want := config.SubscriberSheetConfiguration{SpreadsheetID: "dex-web-sheet", Tab: "Subscribers", Range: "A:C"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("loadSubscriberSheet() = %+v; want the Dex Web use configuration %+v", got, want)
-	}
-	if records := logs.records(t); len(records) != 0 {
-		t.Errorf("a configured Dex Web Step logged %v; want nothing", records)
-	}
-}
-
-func TestLoadSubscriberSheetFallsBackToProcessConfiguration(t *testing.T) {
-	withoutUseConfigurations := t.TempDir()
-	withoutUseConfigurationsPath := writeConnectionsFile(t, withoutUseConfigurations, googleSheetsConnectionFixture)
-	otherStep := t.TempDir()
-	otherStepPath := writeConnectionsFile(t, otherStep, googleSheetsConnectionFixture)
-	otherReference := techblog.SubscriberSheetConfigurationRef()
-	otherReference.StepType += "Elsewhere"
-	writeUseConfigurationsFile(t, otherStep, otherReference, map[string]any{
-		"spreadsheetId": "other-step-sheet", "tab": "Other", "range": "A:Z",
-	})
-
-	for _, testCase := range []struct {
-		name     string
-		path     string
-		wantInfo int
-	}{
-		{name: "no connector store", wantInfo: 0},
-		{name: "no use-configurations file", path: withoutUseConfigurationsPath, wantInfo: 1},
-		{name: "use configuration for another Step", path: otherStepPath, wantInfo: 1},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			var store *localconfig.Store
-			if testCase.path != "" {
-				store = loadStoreFile(t, testCase.path)
-			}
-			logger, logs := newLogRecorder()
-			configuration := processConfigurationWithSubscriberSheet()
-
-			got := loadSubscriberSheet(store, configuration, logger)
-			if !reflect.DeepEqual(got, configuration.Newsletter.SubscriberSheet) {
-				t.Errorf("loadSubscriberSheet() = %+v; want the process configuration %+v", got, configuration.Newsletter.SubscriberSheet)
-			}
-			info := logs.find(t, subscriberSheetFallbackMessage)
-			if len(info) != testCase.wantInfo {
-				t.Fatalf("got %d fallback records; want %d in %v", len(info), testCase.wantInfo, logs.records(t))
-			}
-			for _, record := range info {
-				record.require(t, "level", "INFO")
-			}
-		})
-	}
-}
-
 func TestLoadProcessInputsStartsOnFreshMachine(t *testing.T) {
 	t.Setenv(ProcessConfigurationFileEnvironmentVariable, "")
 	t.Setenv(localconfig.EnvironmentVariable, filepath.Join(t.TempDir(), "connections.json"))
@@ -466,14 +404,6 @@ var (
 		connectionName: techblog.SlackConnectionName,
 		credentials:    map[string]string{"bot_token": "xoxb-test", "user_token": "xoxp-test", "app_token": "xapp-test"},
 	}
-	googleSheetsConnectionFixture = connectionFixture{
-		connectorID:    spreadsheet.ConnectorID,
-		modulePath:     "github.com/superdurable/dex-connectors-library/connectors/google/spreadsheet",
-		moduleVersion:  "v0.7.0",
-		provider:       "google",
-		connectionName: techblog.GoogleSheetsConnectionName,
-		credentials:    map[string]string{"access_token": "sheets-test-token"},
-	}
 )
 
 // writeConnectionsFile writes directory/connections.json as Dex Web does.
@@ -498,23 +428,6 @@ func writeConnectionsFileAt(t *testing.T, path string, fixtures ...connectionFix
 	}
 	writePrivateJSON(t, path, map[string]any{"schemaVersion": localconfig.SchemaVersion, "connections": connections})
 	return path
-}
-
-// writeUseConfigurationsFile writes the non-secret operation-use sidecar
-// (localconfig.UseConfigurationsSchemaVersion) beside connections.json.
-func writeUseConfigurationsFile(t *testing.T, directory string, reference sdkgo.ConnectorConfigurationRef, configuration map[string]any) {
-	t.Helper()
-	writePrivateJSON(t, filepath.Join(directory, localconfig.UseConfigurationsFileName), map[string]any{
-		"schemaVersion": localconfig.UseConfigurationsSchemaVersion,
-		"operationConfigurations": []any{map[string]any{
-			"connectorId":    reference.ConnectorID,
-			"connectionName": reference.ConnectionName,
-			"operationId":    reference.OperationID,
-			"flowType":       reference.FlowType,
-			"stepType":       reference.StepType,
-			"configuration":  configuration,
-		}},
-	})
 }
 
 func writePrivateJSON(t *testing.T, path string, value any) {
@@ -545,14 +458,6 @@ func loadStoreFile(t *testing.T, path string) *localconfig.Store {
 		t.Fatalf("load connector store fixture: %v", err)
 	}
 	return store
-}
-
-func processConfigurationWithSubscriberSheet() config.ProcessConfiguration {
-	configuration := config.Default()
-	configuration.Newsletter.SubscriberSheet = config.SubscriberSheetConfiguration{
-		SpreadsheetID: "process-file-sheet", Tab: "Fallback", Range: "A:B",
-	}
-	return configuration
 }
 
 // logRecorder captures JSON log records so tests can assert on the warnings an
@@ -595,5 +500,86 @@ func (record logRecord) require(t *testing.T, key string, want string) {
 	t.Helper()
 	if got, _ := record[key].(string); got != want {
 		t.Errorf("log record %q = %q; want %q in %v", key, got, want, record)
+	}
+}
+
+type scriptedSubscriberAdder struct {
+	result   techblog.AddNewsletterSubscriberResult
+	err      error
+	deadline bool
+}
+
+func (adder *scriptedSubscriberAdder) AddNewsletterSubscriber(ctx context.Context, _ string) (techblog.AddNewsletterSubscriberResult, error) {
+	_, adder.deadline = ctx.Deadline()
+	return adder.result, adder.err
+}
+
+func TestNewsletterSubscriptionsMapsListOutcomesToAPIErrors(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		result    techblog.AddNewsletterSubscriberResult
+		err       error
+		wantEmail string
+		wantErr   error
+	}{
+		"added":              {result: techblog.AddNewsletterSubscriberResult{Outcome: techblog.SubscriptionAdded, Email: "a@example.com"}, wantEmail: "a@example.com"},
+		"already subscribed": {result: techblog.AddNewsletterSubscriberResult{Outcome: techblog.SubscriptionAlreadySubscribed, Email: "a@example.com"}, wantEmail: "a@example.com"},
+		"invalid address":    {result: techblog.AddNewsletterSubscriberResult{Outcome: techblog.SubscriptionInvalidAddress}, wantErr: api.ErrInvalidEmailAddress},
+		"list full":          {result: techblog.AddNewsletterSubscriberResult{Outcome: techblog.SubscriptionListFull}, wantErr: api.ErrSubscriberListFull},
+	} {
+		t.Run(name, func(t *testing.T) {
+			adder := &scriptedSubscriberAdder{result: testCase.result, err: testCase.err}
+			email, err := newsletterSubscriptions{list: adder}.Subscribe(context.Background(), "A@Example.com")
+			if email != testCase.wantEmail || !errors.Is(err, testCase.wantErr) || (testCase.wantErr == nil && err != nil) {
+				t.Fatalf("Subscribe() = %q, %v; want %q, %v", email, err, testCase.wantEmail, testCase.wantErr)
+			}
+			if !adder.deadline {
+				t.Error("Subscribe() called the list without a deadline")
+			}
+		})
+	}
+}
+
+func TestNewsletterSubscriptionsReportsUnavailableListWithoutTheAddress(t *testing.T) {
+	adder := &scriptedSubscriberAdder{err: errors.New("dial tcp 127.0.0.1:8801: connection refused")}
+	_, err := newsletterSubscriptions{list: adder}.Subscribe(context.Background(), "secret.reader@example.com")
+	if err == nil || errors.Is(err, api.ErrInvalidEmailAddress) || errors.Is(err, api.ErrSubscriberListFull) {
+		t.Fatalf("Subscribe() error = %v; want an unavailable error", err)
+	}
+	if strings.Contains(err.Error(), "secret.reader") {
+		t.Errorf("error %q contains the subscriber address", err)
+	}
+	adder = &scriptedSubscriberAdder{result: techblog.AddNewsletterSubscriberResult{Outcome: "surprise"}}
+	if _, err := (newsletterSubscriptions{list: adder}).Subscribe(context.Background(), "a@example.com"); err == nil {
+		t.Fatal("Subscribe() accepted an unknown outcome")
+	}
+}
+
+func TestStartSubscriberListRetriesUntilTheListStarts(t *testing.T) {
+	logger, logs := newLogRecorder()
+	attempts := 0
+	err := startSubscriberList(context.Background(), func(context.Context) error {
+		attempts++
+		if attempts < 3 {
+			return errors.New("Dex is starting")
+		}
+		return nil
+	}, logger)
+	if err != nil || attempts != 3 {
+		t.Fatalf("startSubscriberList() = %v after %d attempts; want nil after 3", err, attempts)
+	}
+	if warnings := logs.find(t, "could not start the newsletter subscriber list Flow; retrying"); len(warnings) != 2 {
+		t.Errorf("got %d retry logs; want 2", len(warnings))
+	}
+}
+
+func TestStartSubscriberListStopsWhenCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	logger, _ := newLogRecorder()
+	err := startSubscriberList(ctx, func(context.Context) error {
+		cancel()
+		return errors.New("Dex is unavailable")
+	}, logger)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("startSubscriberList() = %v; want context.Canceled", err)
 	}
 }

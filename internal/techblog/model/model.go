@@ -282,12 +282,10 @@ type GenerationResult struct {
 // SubscriberList is the validated newsletter audience snapshot taken when the
 // editor approves sending.
 type SubscriberList struct {
-	Recipients        []string `json:"recipients"`
-	RowsRead          int      `json:"rowsRead"`
-	InvalidAddresses  int      `json:"invalidAddresses"`
-	DuplicateCount    int      `json:"duplicateCount"`
-	UnsubscribedCount int      `json:"unsubscribedCount"`
-	TruncatedCount    int      `json:"truncatedCount"`
+	Recipients       []string `json:"recipients"`
+	InvalidAddresses int      `json:"invalidAddresses"`
+	DuplicateCount   int      `json:"duplicateCount"`
+	TruncatedCount   int      `json:"truncatedCount"`
 }
 
 // DeliveryStatus is the recorded outcome of sending the newsletter to one
@@ -301,6 +299,14 @@ const (
 	DeliveryDefect    DeliveryStatus = "defect"
 )
 
+// DeliveryException records one subscriber whose send was not confirmed, so
+// an operator can check it in Dex Web before sending again.
+type DeliveryException struct {
+	Recipient   string         `json:"recipient"`
+	Status      DeliveryStatus `json:"status"`
+	FailureKind string         `json:"failureKind,omitempty"`
+}
+
 // DeliverySummary counts per-subscriber delivery outcomes.
 type DeliverySummary struct {
 	Recipients int `json:"recipients"`
@@ -309,7 +315,8 @@ type DeliverySummary struct {
 	Uncertain  int `json:"uncertain"`
 	Defect     int `json:"defect"`
 	// SkippedOverLimit counts valid subscribed addresses dropped by
-	// newsletter.maxRecipients; InvalidAddresses counts unusable sheet cells.
+	// newsletter.maxRecipients; InvalidAddresses counts unusable stored
+	// addresses.
 	SkippedOverLimit int `json:"skippedOverLimit"`
 	InvalidAddresses int `json:"invalidAddresses"`
 }
