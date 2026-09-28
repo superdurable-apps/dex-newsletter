@@ -235,24 +235,24 @@ def copy_to_private_file(source: str, destination: str) -> None:
         raise
 
 
-def write_document(path: str, document: dict, now: datetime) -> str | None:
+def write_document(path: str, document: dict, now: datetime, *, backup: bool = True) -> str | None:
     """Atomically replaces path with document, mode 0600.
 
-    The current file, if any, is first copied to a backup next to it that is
-    mode 0600 from the moment it is created. The backup holds the same
-    plaintext credentials; delete it when you no longer need it. Returns the
-    backup path, or None when there was no file. An existing directory keeps
-    its mode; only a directory created here is made 0700.
+    Unless backup is False, the current file, if any, is first copied to a
+    backup next to it that is mode 0600 from the moment it is created. The
+    backup holds the same plaintext credentials; delete it when you no longer
+    need it. Returns the backup path, or None when none was made. An existing
+    directory keeps its mode; only a directory created here is made 0700.
     """
     if os.path.islink(path):
         raise ConnectionsFileError(f"{path} is a symbolic link; the application requires a regular file")
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, mode=DIRECTORY_MODE, exist_ok=True)
 
-    backup = None
-    if os.path.exists(path):
-        backup = backup_path_for(path, now)
-        copy_to_private_file(path, backup)
+    backup_path = None
+    if backup and os.path.exists(path):
+        backup_path = backup_path_for(path, now)
+        copy_to_private_file(path, backup_path)
 
     descriptor, temporary = tempfile.mkstemp(dir=directory, prefix=".connections.", suffix=".tmp")
     try:
@@ -267,4 +267,4 @@ def write_document(path: str, document: dict, now: datetime) -> str | None:
         if os.path.exists(temporary):
             os.unlink(temporary)
         raise
-    return backup
+    return backup_path
