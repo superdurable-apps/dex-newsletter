@@ -7,4 +7,12 @@ h1 { margin: 8px 0 16px; font-size: clamp(2.4rem, 7vw, 4.6rem); line-height: .96
 .lede { color: #aab8cc; font-size: 1.15rem; }
 .dex-web-link { display: inline-block; padding: 12px 16px; border-radius: 12px; color: #06131f; background: #6ae4c4; font-weight: 800; text-decoration: none; }
 .dex-web-link:focus-visible { outline: 3px solid #e8edf8; outline-offset: 3px; }
+.panel { margin-top: 18px; padding: 24px; border: 1px solid #29415d; border-radius: 20px; background: rgba(12, 28, 47, .88); box-shadow: 0 24px 80px rgba(0,0,0,.25); }
+label { display: block; margin-bottom: 10px; font-size: .82rem; font-weight: 700; color: #aab8cc; }
+.form-row { display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+input { flex: 1; min-width: 0; padding: 14px 16px; border: 1px solid #36506d; border-radius: 12px; color: white; background: #091727; font: inherit; }
+button { padding: 13px 18px; border: 0; border-radius: 12px; background: #6ae4c4; color: #06131f; font: inherit; font-weight: 800; cursor: pointer; }
+button:disabled { opacity: .45; cursor: wait; }
+.success { color: #6ae4c4; }
 .error { color: #ff9d9d; }
+@media (max-width: 760px) { .form-row { align-items: stretch; flex-direction: column; } }
