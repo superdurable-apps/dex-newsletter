@@ -13,8 +13,10 @@
     "testUnit": "make test-unit",
     "testIntegration": "make test-integration",
     "testE2E": "make test-e2e",
+    "testMockE2E": "make test-mock-e2e",
     "build": "make build",
     "dev": "make dev",
+    "mock": "make mock",
     "check": "make check"
   }
 }

@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
+    "mock": "vite",
     "generate": "openapi-ts --file openapi-ts.config.ts",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "test:e2e:mock": "playwright test e2e/mock-newsletter-subscription.spec.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build"
   },
