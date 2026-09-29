@@ -98,7 +98,7 @@ func (configuration *Config) applyDefaults() {
 		configuration.Blog.ArtifactDirectory = "artifacts/blog"
 	}
 	if configuration.Blog.PublicationName == "" {
-		configuration.Blog.PublicationName = "Engineering Notes"
+		configuration.Blog.PublicationName = "Dex Tech Blog"
 	}
 	if configuration.Newsletter.UnsubscribeKeyFile == "" {
 		configuration.Newsletter.UnsubscribeKeyFile = ".dex-dev/unsubscribe.key"
