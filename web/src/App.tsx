@@ -1,168 +1,147 @@
-import { type FormEvent, useEffect, useRef, useState } from 'react';
-import { getApplicationInfo, subscribeToNewsletter, unsubscribeFromNewsletter } from './api/generated/sdk.gen';
-import type { ApplicationInfo } from './api/generated/types.gen';
+import { FormEvent, useEffect, useRef, useState } from 'react';
+import type { ReactElement } from 'react';
+import { subscribeToNewsletter, unsubscribeFromNewsletter } from './api/generated/sdk.gen';
 
-type LoadState =
-  | { status: 'loading' }
-  | { status: 'ready'; info: ApplicationInfo }
-  | { status: 'failed' };
+const publicationName = 'Engineering Notes';
 
-type SubscriptionState =
-  | { status: 'idle' }
-  | { status: 'submitting' }
-  | { status: 'subscribed'; email: string }
-  | { status: 'unsubscribing' }
-  | { status: 'unsubscribed' }
-  | { status: 'failed'; message: string };
-
-const unavailableMessage = 'Subscriptions are unavailable right now. Try again in a minute.';
-const unsubscribeUnavailableMessage = "We couldn't unsubscribe you right now. Open the link again in a minute.";
-const invalidLinkMessage = "This unsubscribe link isn't valid. Open the whole link from the newsletter email.";
-const unsubscribeParameter = 'unsubscribe';
-const unsubscribeToken = /^[A-Za-z0-9_-]{22}$/;
-
-// takeUnsubscribeToken reads the token of an email's unsubscribe link and
-// removes it from the address bar, so it does not linger in history or get
-// sent again on reload. It returns null when the page was not opened from a
-// link.
-function takeUnsubscribeToken(): string | null {
-  const url = new URL(window.location.href);
-  const token = url.searchParams.get(unsubscribeParameter);
-  if (token === null) return null;
-  url.searchParams.delete(unsubscribeParameter);
-  window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash);
-  return token;
+function errorMessage(error: unknown, fallback: string) {
+  if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
+    return error.message;
+  }
+  return fallback;
 }
 
-// serverMessage returns the message of an OpenAPI Error body. Network and
-// parse failures surface as Error instances or text and get the generic copy.
-function serverMessage(error: unknown) {
-  if (!error || typeof error !== 'object' || error instanceof Error) return undefined;
-  const body = error as { error?: unknown; message?: unknown };
-  return typeof body.error === 'string' && typeof body.message === 'string' && body.message !== ''
-    ? body.message
-    : undefined;
-}
-
-// The newsletter page. Its only control is the subscription form; opening an
-// email's unsubscribe link here unsubscribes immediately and keeps the form
-// for resubscribing. Dex Web v2 remains the only process-management surface,
-// so this page must not grow approval, status, list, detail, or retry controls.
-export function App() {
-  const [state, setState] = useState<LoadState>({ status: 'loading' });
+export function SubscribePage({ onSubscribed }: { onSubscribed: (already: boolean) => void }) {
   const [email, setEmail] = useState('');
-  const [unsubscribeLinkToken] = useState(takeUnsubscribeToken);
-  const [subscription, setSubscription] = useState<SubscriptionState>(() =>
-    unsubscribeLinkToken === null ? { status: 'idle' } : { status: 'unsubscribing' },
-  );
-  const unsubscribeStarted = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
 
-  useEffect(() => {
-    let active = true;
-    getApplicationInfo()
-      .then((response) => {
-        if (!active) return;
-        setState(response.data ? { status: 'ready', info: response.data } : { status: 'failed' });
-      })
-      .catch(() => {
-        if (active) setState({ status: 'failed' });
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    // The ref keeps React StrictMode's second effect run from sending twice.
-    if (unsubscribeLinkToken === null || unsubscribeStarted.current) return;
-    unsubscribeStarted.current = true;
-    if (!unsubscribeToken.test(unsubscribeLinkToken)) {
-      setSubscription({ status: 'failed', message: invalidLinkMessage });
-      return;
-    }
-    // A subscribe the reader started meanwhile owns the page; keep its state.
-    const settle = (next: SubscriptionState) =>
-      setSubscription((current) => (current.status === 'unsubscribing' ? next : current));
-    unsubscribeFromNewsletter({ body: { token: unsubscribeLinkToken } })
-      .then((response) => {
-        if (response.data?.status === 'unsubscribed') {
-          settle({ status: 'unsubscribed' });
-        } else {
-          const message = serverMessage(response.error);
-          settle({
-            status: 'failed',
-            message: response.response?.status === 400 ? invalidLinkMessage : message ?? unsubscribeUnavailableMessage,
-          });
-        }
-      })
-      .catch(() => settle({ status: 'failed', message: unsubscribeUnavailableMessage }));
-  }, [unsubscribeLinkToken]);
-
-  async function subscribe(event: FormEvent<HTMLFormElement>) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
-    if (subscription.status === 'submitting') return;
-    const submitted = email;
-    setSubscription({ status: 'submitting' });
+    setBusy(true);
+    setError('');
     try {
-      const response = await subscribeToNewsletter({ body: { email: submitted } });
-      if (response.data?.email) {
-        setSubscription({ status: 'subscribed', email: response.data.email });
-        // Keep an address the reader started editing while the request ran.
-        setEmail((current) => (current === submitted ? '' : current));
-      } else {
-        setSubscription({ status: 'failed', message: serverMessage(response.error) ?? unavailableMessage });
+      const response = await subscribeToNewsletter({ body: { email: email.trim() } });
+      if (response.data) {
+        onSubscribed(response.data.status === 'already_subscribed');
+        return;
       }
+      setError(errorMessage(response.error, 'Subscribing failed. Try again in a moment.'));
     } catch {
-      setSubscription({ status: 'failed', message: unavailableMessage });
+      setError('Subscribing failed. Check your connection and try again.');
+    } finally {
+      setBusy(false);
     }
   }
 
-  const submitting = subscription.status === 'submitting';
-
   return (
     <main>
-      <p className="eyebrow">NEWSLETTER</p>
-      {state.status === 'loading' && <p aria-busy="true">Loading application…</p>}
-      {state.status === 'failed' && <p role="alert" className="error">Application information is unavailable.</p>}
-      {state.status === 'ready' && (
-        <>
-          <h1>{state.info.name}</h1>
-          {state.info.dexWebUrl && (
-            <p>
-              <a className="dex-web-link" href={state.info.dexWebUrl}>Open Dex Web</a>
-            </p>
-          )}
-        </>
-      )}
-      <p className="lede">Newsletter requests start from Slack and are reviewed in Dex Web.</p>
-
-      <section className="panel">
-        <form aria-label="Newsletter subscription" aria-busy={submitting} onSubmit={subscribe}>
-          <label htmlFor="email">Email</label>
-          <div className="form-row">
-            <input
-              id="email"
-              type="email"
-              name="email"
-              autoComplete="email"
-              required
-              maxLength={254}
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-            />
-            {/* aria-disabled keeps keyboard focus on the button while the
-                request runs; the submit guard above blocks a second request. */}
-            <button aria-disabled={submitting} type="submit">Subscribe</button>
-          </div>
-        </form>
-        {/* One live region that stays mounted announces each result. */}
-        <p role="status" className="success">
-          {subscription.status === 'subscribed' && `Subscribed as ${subscription.email}.`}
-          {subscription.status === 'unsubscribing' && 'Unsubscribing…'}
-          {subscription.status === 'unsubscribed' && "You're unsubscribed. You won't receive future issues."}
-        </p>
-        {subscription.status === 'failed' && <p role="alert" className="error">{subscription.message}</p>}
-      </section>
+      <p className="eyebrow">{publicationName}</p>
+      <h1>What we shipped, in your inbox.</h1>
+      <p className="lede">Deep dives on new capabilities, written from the pull requests that built them.</p>
+      <form onSubmit={submit} noValidate>
+        <label htmlFor="email">Email</label>
+        <div className="row">
+          <input
+            id="email"
+            type="email"
+            autoComplete="email"
+            placeholder="you@example.com"
+            value={email}
+            maxLength={254}
+            aria-invalid={error !== ''}
+            aria-describedby={error ? 'subscribe-error' : undefined}
+            onChange={(event) => setEmail(event.target.value)}
+          />
+          <button type="submit" disabled={busy || email.trim() === ''}>{busy ? 'Subscribing…' : 'Subscribe'}</button>
+        </div>
+      </form>
+      {error && <p id="subscribe-error" role="alert" className="error">{error}</p>}
+      <p className="note">One email per post. Unsubscribe from any email.</p>
     </main>
   );
+}
+
+export function SubscribedPage({ already }: { already: boolean }) {
+  return (
+    <main>
+      <p className="eyebrow">{publicationName}</p>
+      <h1>{already ? "You're already subscribed" : "You're subscribed"}</h1>
+      <p className="lede">The next post arrives in your inbox. Every email has an unsubscribe link.</p>
+      <p><a href="/">Back</a></p>
+    </main>
+  );
+}
+
+type UnsubscribeState = 'working' | 'unsubscribed' | 'not_subscribed' | 'invalid' | 'failed';
+
+export function UnsubscribePage({ search }: { search: string }) {
+  const [state, setState] = useState<UnsubscribeState>('working');
+  const [message, setMessage] = useState('');
+  const started = useRef(false);
+
+  useEffect(() => {
+    if (started.current) return;
+    started.current = true;
+    const query = new URLSearchParams(search);
+    const email = query.get('email') ?? '';
+    const token = query.get('token') ?? '';
+    if (!email || !token) {
+      setState('invalid');
+      return;
+    }
+    unsubscribeFromNewsletter({ body: { email, token } })
+      .then((response) => {
+        if (response.data) {
+          setState(response.data.status);
+        } else if (response.response?.status === 400) {
+          setState('invalid');
+        } else {
+          setMessage(errorMessage(response.error, 'Unsubscribing failed.'));
+          setState('failed');
+        }
+      })
+      .catch(() => setState('failed'));
+  }, [search]);
+
+  const content: Record<UnsubscribeState, [string, string]> = {
+    working: ['Unsubscribing…', 'One moment.'],
+    unsubscribed: ["You're unsubscribed", 'You will not receive more newsletters.'],
+    not_subscribed: ["You're not subscribed", 'This address is not on the list, so there is nothing to remove.'],
+    invalid: ['This link is invalid', 'Use the unsubscribe link from your newsletter email.'],
+    failed: ['Unsubscribing failed', message || 'Open the link again in a moment.'],
+  };
+  const [heading, detail] = content[state];
+  return (
+    <main>
+      <p className="eyebrow">{publicationName}</p>
+      <h1>{heading}</h1>
+      <p className="lede" role={state === 'failed' || state === 'invalid' ? 'alert' : 'status'}>{detail}</p>
+      {state !== 'working' && <p><a href="/">{state === 'unsubscribed' ? 'Subscribe again' : 'Back'}</a></p>}
+    </main>
+  );
+}
+
+export function App() {
+  const [path, setPath] = useState(window.location.pathname);
+  const [already, setAlready] = useState(false);
+
+  useEffect(() => {
+    const onPopState = () => setPath(window.location.pathname);
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  function subscribed(wasAlready: boolean) {
+    setAlready(wasAlready);
+    window.history.pushState({}, '', '/subscribed');
+    setPath('/subscribed');
+  }
+
+  const pages: Record<string, () => ReactElement> = {
+    '/subscribed': () => <SubscribedPage already={already} />,
+    '/unsubscribe': () => <UnsubscribePage search={window.location.search} />,
+  };
+  const Page = pages[path] ?? (() => <SubscribePage onSubscribed={subscribed} />);
+  return <Page />;
 }

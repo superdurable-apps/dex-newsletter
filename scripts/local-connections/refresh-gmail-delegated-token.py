@@ -7,7 +7,7 @@ Google Workspace domain-wide delegation, a service account can mint a token
 that sends as a user of the domain. This script does that on a schedule:
 
     scripts/local-connections/refresh-gmail-delegated-token.py \\
-        --service-account-key ~/.dex/secrets/service-account.json \\
+        --service-account-key path/to/service-account.json \\
         --sender newsletter@example.com
 
 It signs a JWT assertion (iss: the service account, sub: the sender, scope:

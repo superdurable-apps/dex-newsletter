@@ -1,4 +1,4 @@
-name: Template CI
+name: CI
 
 on:
   pull_request:
@@ -52,21 +52,15 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/temporal" --version
       - name: Build pinned Dex CLI
-        shell: bash
         run: |
           npm --prefix upstream-dex/web ci
           npm --prefix upstream-dex/web run check
           npm --prefix upstream-dex/web run build
           mkdir -p "$HOME/.local/bin"
-          cli_version="$(cat DEX_CLI_BASELINE)"
-          cli_version="${cli_version#cli-}"
-          GOWORK=off go build -C upstream-dex/cli -trimpath \
-            -ldflags "-X main.version=${cli_version} -X main.commit=$(git -C upstream-dex rev-parse HEAD)" \
-            -o "$HOME/.local/bin/dexcli" ./cmd/dexcli
-          "$HOME/.local/bin/dexcli" version
+          GOWORK=off go build -C upstream-dex/cli -trimpath -o "$HOME/.local/bin/dexcli" ./cmd/dexcli
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Install Playwright Chromium
         working-directory: web
         run: npx playwright install --with-deps chromium
-      - name: Check template
+      - name: Check
         run: make check

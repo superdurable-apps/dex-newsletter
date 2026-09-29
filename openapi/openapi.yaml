@@ -1,108 +1,65 @@
 openapi: 3.0.3
 info:
-  title: Dex Tech Blog API
+  title: Dex Blog Newsletter API
   version: 1.0.0
+  description: >-
+    Public reader surface only. Editors manage blog posts and subscribers in Dex Web.
 paths:
-  /api/application-info:
+  /api/health:
     get:
-      operationId: getApplicationInfo
+      operationId: getHealth
       responses:
         '200':
-          description: Application identity for the home page.
+          description: Application is healthy.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApplicationInfo'
+                $ref: '#/components/schemas/HealthResponse'
   /api/newsletter/subscriptions:
     post:
       operationId: subscribeToNewsletter
-      description: >-
-        Adds one email address to the newsletter subscriber list. Subscribing an
-        address that is already on the list succeeds with the same response,
-        and a full list answers 409 for every valid address, so no response
-        reveals list membership.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/NewsletterSubscriptionRequest'
+              $ref: '#/components/schemas/SubscriptionRequest'
       responses:
         '200':
-          description: The address is on the newsletter subscriber list.
+          description: The address is subscribed, now or already.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/NewsletterSubscription'
+                $ref: '#/components/schemas/SubscriptionResponse'
         '400':
-          description: The email address is not a single, deliverable address.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
+          $ref: '#/components/responses/BadRequest'
         '409':
-          description: The subscriber list is full; answered for every valid address, subscribed or not.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
+          $ref: '#/components/responses/Conflict'
         '503':
-          description: The subscriber list is temporarily unavailable.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
+          $ref: '#/components/responses/Unavailable'
   /api/newsletter/unsubscriptions:
     post:
       operationId: unsubscribeFromNewsletter
-      description: >-
-        Removes the subscriber named by the token of a newsletter unsubscribe
-        link. A token that names no current subscriber gets the same response,
-        so the response never reveals list membership.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/NewsletterUnsubscriptionRequest'
+              $ref: '#/components/schemas/UnsubscriptionRequest'
       responses:
         '200':
-          description: The subscriber named by the token, if any, is no longer on the list.
+          description: The address is no longer subscribed.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/NewsletterUnsubscription'
+                $ref: '#/components/schemas/UnsubscriptionResponse'
         '400':
-          description: The token is not an unsubscribe token.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
+          $ref: '#/components/responses/BadRequest'
         '503':
-          description: The subscriber list is temporarily unavailable.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
+          $ref: '#/components/responses/Unavailable'
 components:
   schemas:
-    NewsletterUnsubscriptionRequest:
-      type: object
-      additionalProperties: false
-      required: [token]
-      properties:
-        token:
-          type: string
-          pattern: '^[A-Za-z0-9_-]{22}$'
-    NewsletterUnsubscription:
-      type: object
-      additionalProperties: false
-      required: [status]
-      properties:
-        status:
-          type: string
-          enum: [unsubscribed]
-    NewsletterSubscriptionRequest:
+    SubscriptionRequest:
       type: object
       additionalProperties: false
       required: [email]
@@ -111,29 +68,70 @@ components:
           type: string
           minLength: 1
           maxLength: 254
-    NewsletterSubscription:
+    SubscriptionResponse:
       type: object
       additionalProperties: false
-      required: [email]
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [subscribed, already_subscribed]
+    UnsubscriptionRequest:
+      type: object
+      additionalProperties: false
+      required: [email, token]
       properties:
         email:
           type: string
-          description: The subscribed address in its canonical lowercase form.
-    Error:
+          minLength: 1
+          maxLength: 254
+        token:
+          type: string
+          minLength: 1
+          maxLength: 128
+    UnsubscriptionResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [unsubscribed, not_subscribed]
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+    ErrorResponse:
       type: object
       additionalProperties: false
       required: [error, message]
       properties:
         error:
           type: string
+          pattern: '^[a-z][a-z0-9_]*$'
         message:
           type: string
-    ApplicationInfo:
-      type: object
-      additionalProperties: false
-      required: [name]
-      properties:
-        name:
-          type: string
-        dexWebUrl:
-          type: string
+          maxLength: 3000
+  responses:
+    BadRequest:
+      description: Invalid request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: The request conflicts with the subscriber list.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unavailable:
+      description: The subscriber list is temporarily unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'

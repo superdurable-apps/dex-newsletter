@@ -7,9 +7,7 @@ mkdir -p "${temporary_parent}"
 temporary_directory="$(mktemp -d "${temporary_parent}/openapi-codegen.XXXXXX")"
 trap 'rm -rf -- "${temporary_directory}"' EXIT
 
-# tools/openapi is an isolated tool module; a local uncommitted go.work used for
-# connector development must not change how the code generator resolves.
-GOWORK=off go -C "${root_directory}/tools/openapi" tool ogen \
+go -C "${root_directory}/tools/openapi" tool ogen \
   --target "${temporary_directory}/go" \
   --package generated \
   ../../openapi/openapi.yaml

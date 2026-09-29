@@ -1,17 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# shellcheck source=scripts/dexcli-baseline.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/dexcli-baseline.sh"
-require_dexcli_baseline
-
-# Tests never read the developer's connector connection store or process
-# configuration: with no DEX_CONNECTOR_CONFIG_FILE the application starts no
-# Slack Socket Mode Trigger and calls no provider, and Dex gets an empty
-# temporary connector directory instead of ~/.dex/connectors.
-unset DEX_CONNECTOR_CONFIG_FILE TECH_BLOG_CONFIG_FILE
-
-test_directory="$(mktemp -d "${TMPDIR:-/tmp}/dex-tech-blog.XXXXXX")"
+test_directory="$(mktemp -d "${TMPDIR:-/tmp}/dex-basic-process.XXXXXX")"
 free_port() {
   python3 -c 'import socket; server = socket.socket(); server.bind(("127.0.0.1", 0)); print(server.getsockname()[1]); server.close()'
 }
@@ -37,22 +27,13 @@ cleanup() {
   fi
   exit "${exit_code}"
 }
-trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap cleanup EXIT INT TERM
 
-mkdir -p "${test_directory}/connectors"
-"${DEXCLI}" dev -open=false -dex-port "${dex_port}" -web-port "${web_port}" \
-  -blob-store-dir "${test_directory}/dex-blobs" \
-  -sqlite-db-filename "${test_directory}/dex.sqlite" \
-  -server-log-folder "${test_directory}/logs" \
-  -connector-config-dir "${test_directory}/connectors" \
-  >"${test_directory}/dex.log" 2>&1 &
+dexcli dev -open=false -dex-port "${dex_port}" -web-port "${web_port}" -blob-store-dir "${test_directory}/dex-blobs" -sqlite-db-filename "${test_directory}/dex.sqlite" -server-log-folder "${test_directory}/logs" >"${test_directory}/dex.log" 2>&1 &
 dex_pid=$!
 deadline=$((SECONDS + 45))
-until "${DEXCLI}" health -server "${DEX_FLOW_SERVICE_ADDRESS}" -timeout 1s >/dev/null 2>&1; do
+until dexcli health -server "${DEX_FLOW_SERVICE_ADDRESS}" -timeout 1s >/dev/null 2>&1; do
   if (( SECONDS >= deadline )); then cat "${test_directory}/dex.log"; exit 1; fi
   sleep 0.1
 done
-echo "Dex Web: http://127.0.0.1:${web_port} (Dex FlowService ${DEX_FLOW_SERVICE_ADDRESS})" >&2
-env -u DEX_CONNECTOR_CONFIG_FILE -u TECH_BLOG_CONFIG_FILE "$@"
+"$@"
