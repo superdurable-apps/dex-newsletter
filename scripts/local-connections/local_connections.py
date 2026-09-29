@@ -37,7 +37,7 @@ GOOGLE_ACCESS_TOKEN_LIFETIME = timedelta(minutes=55)
 GOOGLE_CONNECTORS = {
     "gmail": {
         "modulePath": "github.com/superdurable/dex-connectors-library/connectors/google/gmail",
-        "moduleVersion": "v0.12.0",
+        "moduleVersion": "v0.13.0",
         "connectionName": "newsletter-sender",
         "scopes": [
             "openid",

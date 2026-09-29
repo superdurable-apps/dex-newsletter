@@ -56,7 +56,7 @@ def sample_document() -> dict:
         ],
         "triggerBindings": [{
             "connectorId": "slack", "connectionName": "slack-workspace", "triggerName": "channelThreadCreated",
-            "bindingName": "tech-blog-newsletter-request", "configuration": {"channelId": "C0123456789"},
+            "bindingName": "blog-post-request", "configuration": {"channelId": "C0123456789"},
         }],
     }
 

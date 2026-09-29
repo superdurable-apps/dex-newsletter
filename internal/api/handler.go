@@ -1,9 +1,3 @@
-// Package api implements the application's OpenAPI contract.
-//
-// Dex Web v2 remains the only process-management surface. The API exposes the
-// application identity for the home page and the two reader-facing operations
-// of the newsletter page: subscribe, and unsubscribe through an email link.
-// Do not add process-management routes here.
 package api
 
 import (
@@ -13,53 +7,24 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/ogen-go/ogen/ogenerrors"
-
 	"github.com/superdurable-apps/dex-newsletter/internal/api/generated"
+	"github.com/superdurable-apps/dex-newsletter/internal/subscribers"
 )
 
-var (
-	// ErrInvalidEmailAddress reports an address the subscriber list rejects.
-	ErrInvalidEmailAddress = errors.New("email address is not a single, deliverable address")
-	// ErrSubscriberListFull reports that the subscriber list is at capacity.
-	ErrSubscriberListFull = errors.New("newsletter subscriber list is full")
-)
-
-// NewsletterSubscriptions adds and removes newsletter subscribers.
-type NewsletterSubscriptions interface {
-	// Subscribe adds the address and returns its canonical form. Adding an
-	// address that is already subscribed succeeds. It returns
-	// ErrInvalidEmailAddress or ErrSubscriberListFull for a rejected address
-	// and any other error when the list cannot be reached.
-	Subscribe(ctx context.Context, email string) (string, error)
-	// Unsubscribe removes the subscriber an unsubscribe token names. A token
-	// that names no current subscriber succeeds too. It returns an error only
-	// when the list cannot be reached.
-	Unsubscribe(ctx context.Context, token string) error
+// Newsletter is the subscriber operation boundary the public pages use.
+type Newsletter interface {
+	Subscribe(ctx context.Context, address string) (alreadySubscribed bool, err error)
+	Unsubscribe(ctx context.Context, address, token string) (removed bool, err error)
 }
 
-// ApplicationInfo is the non-business identity returned by GetApplicationInfo.
-type ApplicationInfo struct {
-	// Name is the human-readable application name.
-	Name string
-	// DexWebURL is the optional Dex Web v2 address where the process is managed.
-	DexWebURL string
-}
-
-// Handler implements generated.Handler.
 type Handler struct {
-	info          ApplicationInfo
-	subscriptions NewsletterSubscriptions
+	newsletter Newsletter
+	logger     *slog.Logger
 }
 
-var _ generated.Handler = (*Handler)(nil)
-
-// NewHandler returns the OpenAPI server with JSON 404, 405, and error responses.
-func NewHandler(info ApplicationInfo, subscriptions NewsletterSubscriptions) (*generated.Server, error) {
-	if subscriptions == nil {
-		return nil, errors.New("newsletter subscriptions are required")
-	}
-	return generated.NewServer(&Handler{info: info, subscriptions: subscriptions},
+func NewHandler(newsletter Newsletter, logger *slog.Logger) (*generated.Server, error) {
+	handler := &Handler{newsletter: newsletter, logger: logger}
+	return generated.NewServer(handler,
 		generated.WithErrorHandler(writeGeneratedError),
 		generated.WithNotFound(func(w http.ResponseWriter, _ *http.Request) {
 			writeError(w, http.StatusNotFound, "not_found", "unknown API route")
@@ -71,50 +36,55 @@ func NewHandler(info ApplicationInfo, subscriptions NewsletterSubscriptions) (*g
 	)
 }
 
-// GetApplicationInfo returns the application name and, when configured, the Dex Web URL.
-func (handler *Handler) GetApplicationInfo(context.Context) (*generated.ApplicationInfo, error) {
-	response := &generated.ApplicationInfo{Name: handler.info.Name}
-	if handler.info.DexWebURL != "" {
-		response.DexWebUrl = generated.NewOptString(handler.info.DexWebURL)
-	}
-	return response, nil
+func (handler *Handler) GetHealth(context.Context) (*generated.HealthResponse, error) {
+	return &generated.HealthResponse{Status: generated.HealthResponseStatusOk}, nil
 }
 
-// SubscribeToNewsletter adds the requested address to the subscriber list.
-func (handler *Handler) SubscribeToNewsletter(ctx context.Context, request *generated.NewsletterSubscriptionRequest) (generated.SubscribeToNewsletterRes, error) {
-	email, err := handler.subscriptions.Subscribe(ctx, request.Email)
+func (handler *Handler) SubscribeToNewsletter(ctx context.Context, request *generated.SubscriptionRequest) (generated.SubscribeToNewsletterRes, error) {
+	already, err := handler.newsletter.Subscribe(ctx, request.Email)
 	switch {
+	case err == nil && already:
+		return &generated.SubscriptionResponse{Status: generated.SubscriptionResponseStatusAlreadySubscribed}, nil
 	case err == nil:
-		return &generated.NewsletterSubscription{Email: email}, nil
-	case errors.Is(err, ErrInvalidEmailAddress):
-		return &generated.SubscribeToNewsletterBadRequest{Error: "invalid_email", Message: "Enter a single email address, such as name@example.com."}, nil
-	case errors.Is(err, ErrSubscriberListFull):
-		return &generated.SubscribeToNewsletterConflict{Error: "subscriber_list_full", Message: "The newsletter is not accepting new subscribers right now."}, nil
-	default:
-		slog.WarnContext(ctx, "newsletter subscription failed", "error", err)
-		return &generated.SubscribeToNewsletterServiceUnavailable{Error: "unavailable", Message: "Subscriptions are unavailable right now. Try again in a minute."}, nil
+		return &generated.SubscriptionResponse{Status: generated.SubscriptionResponseStatusSubscribed}, nil
+	case errors.Is(err, subscribers.ErrInvalidAddress):
+		response := generated.SubscribeToNewsletterBadRequest(errorResponse("invalid_email", subscribers.ErrInvalidAddress.Error()))
+		return &response, nil
+	case errors.Is(err, subscribers.ErrListFull):
+		response := generated.SubscribeToNewsletterConflict(errorResponse("list_full", "The newsletter is not taking new subscribers right now."))
+		return &response, nil
 	}
+	handler.logger.Error("subscribe failed", "error", err.Error())
+	response := generated.SubscribeToNewsletterServiceUnavailable(errorResponse("subscription_unavailable", "Subscribing is unavailable right now. Try again in a moment."))
+	return &response, nil
 }
 
-// UnsubscribeFromNewsletter removes the subscriber a link token names.
-func (handler *Handler) UnsubscribeFromNewsletter(ctx context.Context, request *generated.NewsletterUnsubscriptionRequest) (generated.UnsubscribeFromNewsletterRes, error) {
-	if err := handler.subscriptions.Unsubscribe(ctx, request.Token); err != nil {
-		slog.WarnContext(ctx, "newsletter unsubscription failed", "error", err)
-		return &generated.UnsubscribeFromNewsletterServiceUnavailable{Error: "unavailable", Message: "We couldn't unsubscribe you right now. Open the link again in a minute."}, nil
+func (handler *Handler) UnsubscribeFromNewsletter(ctx context.Context, request *generated.UnsubscriptionRequest) (generated.UnsubscribeFromNewsletterRes, error) {
+	removed, err := handler.newsletter.Unsubscribe(ctx, request.Email, request.Token)
+	switch {
+	case err == nil && removed:
+		return &generated.UnsubscriptionResponse{Status: generated.UnsubscriptionResponseStatusUnsubscribed}, nil
+	case err == nil:
+		return &generated.UnsubscriptionResponse{Status: generated.UnsubscriptionResponseStatusNotSubscribed}, nil
+	case errors.Is(err, subscribers.ErrInvalidLink):
+		response := generated.UnsubscribeFromNewsletterBadRequest(errorResponse("invalid_link", "This unsubscribe link is invalid. Use the link from your newsletter email."))
+		return &response, nil
 	}
-	return &generated.NewsletterUnsubscription{Status: generated.NewsletterUnsubscriptionStatusUnsubscribed}, nil
+	handler.logger.Error("unsubscribe failed", "error", err.Error())
+	response := generated.UnsubscribeFromNewsletterServiceUnavailable(errorResponse("unsubscription_unavailable", "Unsubscribing is unavailable right now. Try the link again in a moment."))
+	return &response, nil
 }
 
-func writeGeneratedError(_ context.Context, w http.ResponseWriter, _ *http.Request, err error) {
-	if status := ogenerrors.ErrorCode(err); status >= 400 && status < 500 {
-		writeError(w, status, "invalid_request", "request does not match the OpenAPI contract")
-		return
-	}
-	writeError(w, http.StatusInternalServerError, "internal_error", "request could not be completed")
+func errorResponse(code, message string) generated.ErrorResponse {
+	return generated.ErrorResponse{Error: code, Message: message}
+}
+
+func writeGeneratedError(_ context.Context, w http.ResponseWriter, _ *http.Request, _ error) {
+	writeError(w, http.StatusBadRequest, "invalid_request", "request does not match the OpenAPI contract")
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(generated.Error{Error: code, Message: message})
+	_ = json.NewEncoder(w).Encode(generated.ErrorResponse{Error: code, Message: message})
 }

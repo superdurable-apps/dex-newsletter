@@ -1,4 +1,4 @@
-module github.com/superdurable-apps/dex-newsletter/tools/openapi
+module github.com/superdurable/dex-template-basic-process/tools/openapi
 
 go 1.25.0
 

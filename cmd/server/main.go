@@ -9,12 +9,14 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
-	api "github.com/superdurable-apps/dex-newsletter/internal/api"
-	appRuntime "github.com/superdurable-apps/dex-newsletter/internal/runtime"
+	"github.com/superdurable-apps/dex-newsletter/internal/api"
+	"github.com/superdurable-apps/dex-newsletter/internal/application"
+	"github.com/superdurable-apps/dex-newsletter/internal/config"
+
+	"github.com/superdurable/dex-connectors-library/sdkgo/localconfig"
 )
 
 func main() {
@@ -25,29 +27,49 @@ func main() {
 }
 
 func run() error {
-	logger := newLogger(os.Getenv("LOG_LEVEL"))
-	// The Dex SDK and connectors that log to slog.Default() share the handler.
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	slog.SetDefault(logger)
-	runtime, err := appRuntime.New(logger)
+	configuration, err := config.Load()
 	if err != nil {
 		return err
 	}
-	defer runtime.Close()
-	apiHandler, err := api.NewHandler(api.ApplicationInfo{Name: runtime.ApplicationName(), DexWebURL: runtime.DexWebURL()}, runtime.NewsletterSubscriptions())
+	if configuration.Newsletter.IsLoopback() {
+		logger.Warn("newsletter.publicBaseUrl is a loopback address, so unsubscribe links only work on this machine", "url", configuration.Newsletter.PublicBaseURL)
+	}
+	store, err := localconfig.LoadFromEnvironment()
+	if err != nil {
+		return err
+	}
+	app, err := application.New(application.Options{
+		Logger: logger, Config: configuration, Store: store,
+		FlowServiceAddress: environment("DEX_FLOW_SERVICE_ADDRESS", "127.0.0.1:8801"),
+		WorkerBindAddress:  environment("DEX_WORKER_BIND_ADDRESS", "127.0.0.1:8811"),
+		WorkerTarget:       environment("DEX_WORKER_TARGET", "127.0.0.1:8811"),
+		BlobCacheDirectory: environment("DEX_BLOB_CACHE_DIR", filepath.Join(os.TempDir(), "dex-blog-newsletter-blobs")),
+		// SLACK_TRIGGER=off serves only the reader pages, for E2E tests and local work without Slack.
+		WithoutSlackTrigger: os.Getenv("SLACK_TRIGGER") == "off",
+	})
+	if err != nil {
+		return err
+	}
+	defer app.Close()
+	apiHandler, err := api.NewHandler(app.Subscribers, logger)
 	if err != nil {
 		return fmt.Errorf("create OpenAPI handler: %w", err)
 	}
-	server := newHTTPServer(":"+environment("PORT", "8080"), applicationHandler(apiHandler))
-	workerResult := runtime.StartWorker()
-	serverResult := make(chan error, 1)
-	go func() { serverResult <- server.ListenAndServe() }()
+	server := &http.Server{Addr: environment("BIND_ADDRESS", "127.0.0.1") + ":" + environment("PORT", "8080"), Handler: applicationHandler(apiHandler), ReadHeaderTimeout: 5 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	appResult := make(chan error, 1)
+	go func() { appResult <- app.Run(ctx) }()
+	serverResult := make(chan error, 1)
+	go func() { serverResult <- server.ListenAndServe() }()
+	logger.Info("application started", "address", server.Addr)
 	select {
 	case <-ctx.Done():
-	case err := <-workerResult:
+	case err := <-appResult:
 		if err != nil {
-			return fmt.Errorf("run Dex Worker: %w", err)
+			return fmt.Errorf("run Dex application: %w", err)
 		}
 	case err := <-serverResult:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -59,23 +81,9 @@ func run() error {
 	return server.Shutdown(shutdown)
 }
 
-// maximumAPIRequestBytes bounds every API request body; the largest valid
-// request, one subscription, is well under 1 KiB.
-const maximumAPIRequestBytes = 16 << 10
-
-// newHTTPServer bounds how long a client may take to send a request and how
-// long an idle connection stays open, so a slow or stalled client cannot hold
-// a connection indefinitely.
-func newHTTPServer(address string, handler http.Handler) *http.Server {
-	return &http.Server{
-		Addr: address, Handler: handler,
-		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: time.Minute,
-	}
-}
-
 func applicationHandler(apiHandler http.Handler) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/api/", http.MaxBytesHandler(apiHandler, maximumAPIRequestBytes))
+	mux.Handle("/api/", apiHandler)
 	mux.Handle("/", staticHandler("web/dist"))
 	return mux
 }
@@ -103,17 +111,4 @@ func environment(name, fallback string) string {
 		return value
 	}
 	return fallback
-}
-
-// newLogger writes JSON records at LOG_LEVEL (debug, info, warn, or error;
-// info by default). LOG_LEVEL=debug shows every Slack event the request
-// Trigger ignores and why.
-func newLogger(levelName string) *slog.Logger {
-	level := slog.LevelInfo
-	invalid := strings.TrimSpace(levelName) != "" && level.UnmarshalText([]byte(strings.TrimSpace(levelName))) != nil
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
-	if invalid {
-		logger.Warn("LOG_LEVEL is not debug, info, warn, or error; using info", "log_level", levelName)
-	}
-	return logger
 }

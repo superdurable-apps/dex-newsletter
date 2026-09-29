@@ -6,18 +6,16 @@ require (
 	github.com/go-faster/errors v0.8.0
 	github.com/go-faster/jx v1.2.0
 	github.com/ogen-go/ogen v1.24.0
-	github.com/superdurable/dex-connectors-library/connectors/github v0.7.0
-	github.com/superdurable/dex-connectors-library/connectors/google/gemini v0.1.0
-	github.com/superdurable/dex-connectors-library/connectors/google/gmail v0.12.0
-	github.com/superdurable/dex-connectors-library/connectors/slack v0.10.0
-	github.com/superdurable/dex-connectors-library/sdkgo v0.9.0
+	github.com/superdurable/dex-connectors-library/connectors/github v0.8.0
+	github.com/superdurable/dex-connectors-library/connectors/google/gmail v0.13.0
+	github.com/superdurable/dex-connectors-library/connectors/slack v0.11.0
+	github.com/superdurable/dex-connectors-library/connectors/superdurable/llm v0.1.0
+	github.com/superdurable/dex-connectors-library/sdkgo v0.10.0
 	github.com/superdurable/dex/blob-cache-go v0.1.0
 	github.com/superdurable/dex/sdk-go v0.13.1
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/metric v1.46.0
 	go.opentelemetry.io/otel/trace v1.46.0
-	google.golang.org/grpc v1.79.3
-	google.golang.org/protobuf v1.36.11
 )
 
 require (
@@ -36,6 +34,9 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
+	github.com/superdurable/dex-connectors-library/connectors/anthropic v0.1.0 // indirect
+	github.com/superdurable/dex-connectors-library/connectors/google/gemini v0.3.0 // indirect
+	github.com/superdurable/dex-connectors-library/connectors/openai v0.7.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.28.0 // indirect
@@ -45,5 +46,7 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect
+	google.golang.org/grpc v1.79.3 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )

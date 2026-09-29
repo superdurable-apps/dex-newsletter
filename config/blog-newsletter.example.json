@@ -1,0 +1,23 @@
+{
+  "github": {
+    "owners": ["your-github-org"]
+  },
+  "research": {
+    "defaultWindowDays": 7,
+    "maxWindowDays": 90,
+    "maxRepositories": 5,
+    "pullRequestsPerRepository": 30,
+    "pullRequestsWithChangedFiles": 5,
+    "commitsPerRepository": 50
+  },
+  "blog": {
+    "publicationName": "Engineering Notes",
+    "artifactDirectory": "artifacts/blog",
+    "postUrlTemplate": ""
+  },
+  "newsletter": {
+    "publicBaseUrl": "http://127.0.0.1:8844",
+    "unsubscribeKeyFile": ".dex-dev/unsubscribe.key"
+  },
+  "dexWebUrl": "http://127.0.0.1:8842"
+}

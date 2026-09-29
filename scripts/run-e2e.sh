@@ -1,63 +1,37 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-root_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-cd "${root_directory}"
-
-# Build the server binary and run that, not `go run`: killing a `go run` parent
-# leaves the compiled child serving (and holding the Worker port) after the test.
-owns_artifact_directory=0
-if [[ -n "${DEX_TEST_ARTIFACT_DIR:-}" ]]; then
-  artifact_directory="${DEX_TEST_ARTIFACT_DIR}"
-else
-  artifact_directory="$(mktemp -d "${TMPDIR:-/tmp}/dex-tech-blog-e2e.XXXXXX")"
-  owns_artifact_directory=1
-fi
-server_binary="${artifact_directory}/server"
-app_log="${artifact_directory}/application.log"
-port="${E2E_PORT:-18080}"
-app_pid=""
-
-cleanup() {
-  local exit_code=$? attempts=0
-  trap - EXIT INT TERM
-  if [[ -n "${app_pid}" ]] && kill "${app_pid}" 2>/dev/null; then
-    while kill -0 "${app_pid}" 2>/dev/null && (( attempts < 150 )); do
-      sleep 0.1
-      attempts=$((attempts + 1))
-    done
-    kill -9 "${app_pid}" 2>/dev/null || true
-  fi
-  if [[ -n "${app_pid}" ]]; then wait "${app_pid}" 2>/dev/null || true; fi
-  if (( exit_code != 0 )) && [[ -f "${app_log}" ]]; then
-    echo "Application log (${app_log}):" >&2
-    cat "${app_log}" >&2 || true
-  fi
-  if (( owns_artifact_directory == 1 && exit_code == 0 )); then rm -rf -- "${artifact_directory}"; fi
-  exit "${exit_code}"
-}
-trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
-
+# Runs the reader pages against the real Go application and Dex Server. Providers
+# point at an unreachable loopback port: the journey never calls them.
 npm --prefix web run build
-go build -o "${server_binary}" ./cmd/server
-# A throwaway unsubscribe key; the Playwright suite reads it to build links.
-unsubscribe_key_file="${artifact_directory}/unsubscribe.key"
-(umask 077 && python3 -c 'import base64, secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())' >"${unsubscribe_key_file}")
-export TECH_BLOG_UNSUBSCRIBE_KEY_FILE="${unsubscribe_key_file}"
-PORT="${port}" "${server_binary}" >"${app_log}" 2>&1 &
+artifacts="${DEX_TEST_ARTIFACT_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/dex-blog-newsletter-e2e.XXXXXX")}"
+port="${E2E_PORT:-18080}"
+unused="http://127.0.0.1:9"
+mkdir -p "${artifacts}/connectors"
+cat >"${artifacts}/connectors/connections.json" <<JSON
+{"schemaVersion":"connectors.dex.dev/local-connections/v1alpha1","connections":[
+ {"connectorId":"slack","modulePath":"github.com/superdurable/dex-connectors-library/connectors/slack","moduleVersion":"v0.11.0","provider":"slack","connectionName":"slack-workspace","configuration":{"endpoint":"${unused}"},"credentials":{"bot_token":"fake-bot-token","user_token":"fake-user-token","app_token":"fake-app-token"}},
+ {"connectorId":"github","modulePath":"github.com/superdurable/dex-connectors-library/connectors/github","moduleVersion":"v0.8.0","provider":"github","connectionName":"github","configuration":{"baseUrl":"${unused}"},"credentials":{"access_token":"fake-github-token"}},
+ {"connectorId":"llm","modulePath":"github.com/superdurable/dex-connectors-library/connectors/superdurable/llm","moduleVersion":"v0.1.0","provider":"llm","connectionName":"llm","configuration":{"model":"gemini/gemini-e2e"},"credentials":{"gemini_api_key":"AIza-e2e"}},
+ {"connectorId":"gmail","modulePath":"github.com/superdurable/dex-connectors-library/connectors/google/gmail","moduleVersion":"v0.13.0","provider":"gmail","connectionName":"newsletter-sender","configuration":{"endpoint":"${unused}"},"credentials":{"access_token":"fake-gmail-token","primary_email":"news@example.com"}}
+]}
+JSON
+chmod 600 "${artifacts}/connectors/connections.json"
+export E2E_UNSUBSCRIBE_KEY_FILE="${artifacts}/unsubscribe.key"
+cat >"${artifacts}/config.json" <<JSON
+{"github":{"owners":["e2e"]},"dexWebUrl":"http://127.0.0.1:8842",
+ "blog":{"artifactDirectory":"${artifacts}/blog"},
+ "newsletter":{"publicBaseUrl":"http://127.0.0.1:${port}","unsubscribeKeyFile":"${E2E_UNSUBSCRIBE_KEY_FILE}"}}
+JSON
+app_log="${artifacts}/application.log"
+DEX_CONNECTOR_CONFIG_FILE="${artifacts}/connectors/connections.json" BLOG_NEWSLETTER_CONFIG="${artifacts}/config.json" \
+  SLACK_TRIGGER=off PORT="${port}" go run ./cmd/server >"${app_log}" 2>&1 &
 app_pid=$!
-deadline=$((SECONDS + 45))
-until curl --fail --silent "http://127.0.0.1:${port}/api/application-info" >/dev/null; do
-  if ! kill -0 "${app_pid}" 2>/dev/null; then
-    echo "Application server exited before answering on 127.0.0.1:${port}." >&2
-    exit 1
-  fi
-  if (( SECONDS >= deadline )); then
-    echo "Application server did not answer on 127.0.0.1:${port} within 45s." >&2
-    exit 1
-  fi
-  sleep 0.1
+cleanup() { exit_code=$?; trap - EXIT INT TERM; kill "${app_pid}" 2>/dev/null || true; wait "${app_pid}" 2>/dev/null || true; exit "${exit_code}"; }
+trap cleanup EXIT INT TERM
+deadline=$((SECONDS + 60))
+until curl --fail --silent "http://127.0.0.1:${port}/api/health" >/dev/null && [[ -s "${E2E_UNSUBSCRIBE_KEY_FILE}" ]]; do
+  if (( SECONDS >= deadline )) || ! kill -0 "${app_pid}" 2>/dev/null; then cat "${app_log}"; exit 1; fi
+  sleep 0.2
 done
 E2E_BASE_URL="http://127.0.0.1:${port}" npm --prefix web run test:e2e

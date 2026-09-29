@@ -7,14 +7,12 @@
 /web/playwright-report/
 /web/src/api/generated/
 /web/test-results/
-*.log
 __pycache__/
+*.log
 .DS_STORE
-
-# Local connector development overrides (never commit)
-go.work
-go.work.sum
-
-# Local Dex development state (make dev / dev-dex / dev-app)
 /.dex-dev/
 /artifacts/
+/config/blog-newsletter.json
+*.bak-*
+.env
+*.pem

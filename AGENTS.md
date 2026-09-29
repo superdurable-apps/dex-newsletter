@@ -1,64 +1,26 @@
-# Dex Tech Blog Instructions
+# Basic Process Template Instructions
 
-This repository is the Dex Tech Blog process product: a Slack-triggered Dex
-Process that produces a tech blog post and newsletter, with review in Dex Web,
-mailed to readers who subscribed on the application's home page.
-It is a Superverse `go-react-v1`
-application adapted from the basic-process template (release `v1.7.1`). Read
+This is a complete Dex `go-react-v1` application. Read
 `.superverse/template.json` and `openapi/openapi.yaml`, then load the installed
 `dex-app-builder` skill through the current coding-agent host before changing
-product behavior; it loads the sibling `dex-sdk` Core and Go guidance for
-backend work. Superverse Coding Sandbox preinstalls a pinned Dex Skills
+product behavior. Superverse Coding Sandbox preinstalls a pinned Dex Skills
 release; external developers install the released Dex plugin in their coding
 agent. Never assume a fixed skill path. This repository must not vendor, clone,
 or initialize a project-local copy.
 
-## UI mode: Custom UI (the newsletter page only)
+During product adaptation, first confirm whether the process needs a custom UI.
+If it does not, use Dex Web for process management and retain only a
+non-business Hello World page plus the Go/OpenAPI/React generation skeleton.
+Remove process-management routes, components, fixtures, and related tests.
+Keep only explicitly required integration ingress such as a trigger webhook.
+If a custom UI is required, confirm a static wireframe before connecting the
+generated client to the real Go and Dex backend.
 
-The confirmed UI mode is **Custom UI**. Its recorded Dex Web v2 capability gap
-is a participant portal: newsletter readers are not Dex Web operators, so they
-need their own page. It is limited to one reader-facing control:
-the home page shows the application name, a link to Dex Web, and a newsletter
-subscription form with exactly one Email input and one Subscribe button. Opened
-from an email's unsubscribe link (`?unsubscribe=<token>`), the same page
-unsubscribes immediately (the user chose immediate over a confirm button) and
-keeps the form. The user confirmed that page, field, and those actions; keep it
-intentionally minimal (no other fields, preferences, or subscription
-management) unless the user asks for more and confirms a new static wireframe
-first. Dex Web v2 remains the only
-process-management surface: Runs, Work Queue, search, details, edits, and
-Actions all happen there.
-
-Do not add approval, rejection, retry, escalation, status, display, list,
-search, detail, Action-proxy, or Attribute-proxy routes or components.
-Newsletter requests start from Slack through a dedicated Connector Trigger, not
-an application HTTP webhook. The page reuses the template's `.panel`, `label`,
-`input`, and `button` styles; add no images, icons, animation, or branding.
-
-Every human Action requires the one permission `newsletter.manage`: one editor
-role reviews drafts and recovers failed requests, and each Action's state
-condition decides what Dex Web shows. Do not split it into per-Action
-permissions unless the user confirms separate roles.
-
-Dex Web v0.14.0 invokes Summary, Display, and Action RPCs by name without the
-RPC's registered `RPCOptions` loads, locks, or transactionality (the Go Client
-adds those itself). A Summary or Display RPC that reads an AttributeMap or
-Channel therefore fails in Dex Web and hides the run's Actions; give Dex Web a
-bounded Attribute instead (as `delivery-exceptions-shown` does). Integration
-tests call both RPCs that way on every display poll, and check each output
-against the view's `dex:field` directives as Dex Web does.
-
-Actions from Dex Web therefore run without their `LockAttributes`
-(superdurable/dex#562). The review and attention gates still consume at most
-one decision each (`ForOne` on the gate's Channel instance), so no issue is
-sent twice. What the missing locks allow: two Actions clicked within a few
-milliseconds both report success and only the first takes effect, and an
-Action that lands while the final expiry Execute of `WaitForEditorialDecision`
-or `WaitForOperatorRecovery` runs reports success and is then dropped as the
-request expires (the Slack expiry notice is what the editor sees). Go Client
-callers still get the locks.
-
-## Naming
+`openapi/openapi.yaml` is the only HTTP contract source. Never edit files below
+`internal/api/generated` or `web/src/api/generated` by hand. Change the spec,
+run `make generate`, and update server, UI, integration, and E2E coverage in the
+same change. Both generated directories are ignored local build outputs; never
+add them to Git or include them in a pull request.
 
 Use precise domain names. Do not use the case-insensitive stems `runtime` or
 `normaliz` in repository-owned package, directory, file, type, interface,
@@ -67,111 +29,39 @@ or resource names. Name the concrete execution role or transformation instead,
 such as `TrimWhitespace`, `CanonicalizeURL`, or
 `ValidateAndSortSelections`. Generated and third-party code,
 framework-mandated identifiers, and migration code or tests that must reference
-immutable legacy names are exempt. Known deviations, to be renamed in a
-separate change: the `internal/runtime` package and the
-`internal/techblog/render/normalize*.go` files and their `Normalize*` and
-`normalize*` identifiers. New code follows the rule.
+immutable legacy names are exempt.
 
-## HTTP contract
+The application has two top-level Flows. `internal/blogpost/flow.go` is one
+BlogPost run per Slack request (research, writing, Dex Web review, delivery).
+`internal/subscribers/flow.go` is the single long-lived subscriber list. Keep
+each Flow's indexed Attributes, `GetDexSummary`, `GetDexDisplay`, Action RPCs,
+directives, input structs, and Dex control flow in its own file. Every Step has
+exactly one group and explanation. Their Step, Attribute, Channel, and RPC names
+are durable identities; preserve open-Flow compatibility unless the user
+explicitly requests a migration. Keep provider effects in connector Steps and
+`Execute`; `AwaitEditorDecision.WaitFor` and `HoldSubscriberList.WaitFor` only
+declare their Channel.
 
-`openapi/openapi.yaml` is the only HTTP contract source and defines exactly three
-operations: `getApplicationInfo` (`GET /api/application-info`),
-`subscribeToNewsletter` (`POST /api/newsletter/subscriptions`), and
-`unsubscribeFromNewsletter` (`POST /api/newsletter/unsubscriptions`). Never edit
-files below `internal/api/generated` or `web/src/api/generated` by hand.
-Change the spec, run `make generate`, and update server, UI, and
-E2E coverage in the same change. `internal/api` implements those operations
-plus JSON 404/405 responses; the browser calls only the generated client and
-never Dex. `subscribeToNewsletter` answers the same 200 for a new and an
-existing address, and 409 for every valid address once the list is full, so
-no response reveals list membership; `unsubscribeFromNewsletter` answers the
-same 200 whether or not a token named a subscriber.
+Both Flows are Dex Web v2 / FDG 2.0 definitions. Run `make check-fdg-v2`, which
+validates both files; never fall back to rendering schema v1. Connector Step
+results carry only the operation result, so research and delivery keep their
+place in the `research-cursor` and `delivery-progress` Attributes and advance
+one call at a time. Do not add SubFlows without the evolution gate and explicit
+user confirmation.
 
-## Dex Flows
-
-The Flows live in `internal/techblog/*_flow.go`; the runtime that registers
-them, starts the Worker, and starts the subscriber list lives in
-`internal/runtime`. `NewsletterSubscriberListFlow` (fixed ID
-`newsletter-subscriber-list`, no Steps) is the only owner of subscriber
-addresses: one bounded Attribute written by the locked
-`AddNewsletterSubscriber` and `RemoveNewsletterSubscriber` RPCs and read by
-`TechBlogNewsletterFlow`'s
-`LoadNewsletterSubscribers` Step through `ListNewsletterSubscribers`. Keep
-subscriber data in Dex; do not add a database, cache, or spreadsheet copy
-without a storage decision the user confirms. Every Flow is a Dex
-Web v2 / FDG 2.0 definition with stable Step, Attribute, Channel, Timer, and
-RPC identities. Keep external effects in `Execute`; `WaitFor` only declares
-durable conditions and must not query or mutate providers or Dex state.
-Register every durable primitive in the Flow persistence schema. Preserve
-open-Flow compatibility unless the user explicitly requests a migration. Every
-Step has exactly one group and explanation. `make check-fdg-v2` validates every
-`internal/techblog/*_flow.go` file with rendering schema 2.0 and requires
-`valid: true` with no diagnostics; never fall back to rendering schema v1.
-
-Provider access goes through released Dex connectors. Credentials stay in the
-connector connection store; Flows store only logical connection names. A local
-connector override may use an uncommitted `go.work` (ignored by Git); never
-commit a `go.work`, local `replace`, branch, or pseudo-version. The isolated
-`tools/openapi` module always runs with `GOWORK=off`.
-
-## Required environment
-
-| Variable | Purpose |
-| --- | --- |
-| `DEXCLI` | Dex CLI binary used by `make check-fdg-v2`, `make test-integration`, `make test-e2e`, `make dev`, and `make dev-dex`. Defaults to `dexcli` on `PATH`. The scripts fail fast unless `$DEXCLI version` reports the release pinned in `DEX_CLI_BASELINE`. A project-local copy may live at `$HOME/.local/dexcli/v0.14.0/dexcli`. |
-| `DEX_CONNECTOR_CONFIG_FILE` | Absolute path of the local connector connection store shown by Dex Web (default `~/.dex/connectors/connections.json`). It holds plaintext development credentials: never commit, log, or copy it into Flow state. |
-| `TECH_BLOG_UNSUBSCRIBE_KEY_FILE` | Required secret: the base64 key (at least 32 bytes) that signs unsubscribe links. `scripts/dev.sh` creates `.dex-dev/unsubscribe.key` when unset and `scripts/run-e2e.sh` a throwaway one; never commit a key, and never copy it into Flow state. |
-| `TECH_BLOG_CONFIG_FILE` | Path of the non-secret process configuration JSON (application name, Dex Web URL, model, research, blog, newsletter, and review settings). `make dev` and `make dev-dex` run Dex Web on dexcli's default port `8802` to match the default `dexWebUrl`; keep them in sync if you override `DEX_DEV_WEB_PORT`. |
-
-## Commands and verification
-
-Stable commands are `make bootstrap`, `make generate`, `make check-fdg-v2`,
-`make test-unit`, `make test-integration`, `make test-e2e`, `make build`,
-`make dev`, and `make check`. Build, test, and dev targets regenerate the
-OpenAPI outputs first; `make check` generates once. `internal/api/generated`
-and `web/src/api/generated` are ignored local build outputs: never stage or
-commit them. Do not restore `make check-generated`, `make mock`, or
-`make test-mock-e2e`, and do not add an application mock server, product mock
-routes, or Mock Controls. Use component-level mocks of the generated client
-for hard-to-trigger UI states and, only for a browser-only edge case,
-test-local Playwright request interception; that evidence never replaces the
-real Dex integration and E2E tests.
-
-`make dev` (`scripts/dev.sh`) is `make dev-dex` (Dex Server + Dex Web in the
-foreground) plus `make dev-app` (build the page and server binary, run it
-against `127.0.0.1:8801`); run those two separately to restart the application
-without restarting Dex. Local Dex state (SQLite Runs, blobs, logs, generated
-FDG 2.0 graphs, local connector release metadata) persists in gitignored
-`.dex-dev/`; `rm -rf .dex-dev` resets it. Every Dex start regenerates the Flow
-graphs for `--flow-rendering-dir` and, while `go.work` exists, passes
-`--connector-release-override` for the local connectors. Tests use
-`scripts/with-dex.sh`: free ports, temporary state and connector directory,
-and `DEX_CONNECTOR_CONFIG_FILE` / `TECH_BLOG_CONFIG_FILE` unset; never point
-tests at `.dex-dev/` or a real connection store.
-
-`scripts/local-connections/` holds developer-only Python 3 helpers (standard
-library only) that write a Google access token into the local connection store
-(`set-google-connection.py`, and `refresh-gmail-delegated-token.py`, which
-mints Gmail tokens through Workspace domain-wide delegation from a service
-account key). Never run them from tests or automation against a real store or
-a real key, and never let them print a credential or key. `make test-unit` also runs
-their offline unittest, which uses temporary files and checks that the Google
-connector module version in `local_connections.py` matches `go.mod`; bump them
-together.
+Custom UI covers only the public reader pages (subscribe, subscribed,
+unsubscribe). Editors use Dex Web for every management operation; do not add
+management routes to `openapi/openapi.yaml`.
 
 After each edit batch, run the narrowest relevant Make target. Before calling
 `commit_and_push`, run `make check` successfully and include it in verification.
 If `make check` fails or cannot run, report `blocked=true`. Do not weaken, skip,
 or delete a failing check.
 
-`DEX_SERVER_BASELINE` and `DEX_CLI_BASELINE` pin Dex Server `server/v0.14.0`
-and Dex CLI `cli-v0.14.0`; `go.mod` pins the Dex Go SDK `v0.13.1`. These are
-the pins of basic-process template `v1.7.1`. Advance them only together with
-the template release and the contract test in `internal/templatecontract`. The
-template's release machinery (`scripts/check-template-version.py`, the release
-CI job) and its scheduled `update-dex-dependencies` workflow are not ported:
-this repository is an application, not a template release, and its dependency
-updates are reviewed by hand.
+Stable commands are `make bootstrap`, `make generate`, `make check-fdg-v2`,
+`make test-unit`, `make test-integration`, `make test-e2e`, `make build`,
+`make dev`, and `make check`. `make dev-dex` and `make dev-app` run the
+long-lived local stack described in README.md.
 
 `make bootstrap`, `npm ci`, and `go mod download` may restore dependencies
 already declared by the committed manifests and lockfiles. Before adding or
@@ -181,6 +71,17 @@ version, update the manifest and lockfile together, explain why it is needed,
 and run `make check`. Do not add convenience-only dependencies, perform
 unrelated upgrades or audit auto-fixes such as `npm audit fix`, install global
 or operating-system packages, or run remote installation scripts.
+
+This repository is an application built from template `v1.7.2`
+(`.superverse/template.json` records the origin). It publishes no template
+releases. Advance the Dex Go SDK, `DEX_SERVER_BASELINE`, `DEX_CLI_BASELINE`, and
+the template contract test together, only when the user asks for an upgrade.
+
+Use Vitest mocks of the generated client for isolated loading, failure, and
+terminal UI states. When a browser-only edge case cannot be reached
+economically, use test-local Playwright request interception. Do not add an
+application mock server, a second business state machine, or user-visible Mock
+Controls. Mock evidence never replaces real Dex integration and E2E tests.
 
 When structure, commands, or required tooling changes, update this file,
 `.superverse/template.json`, `README.md`, and contract tests together. Do not
