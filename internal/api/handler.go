@@ -17,13 +17,20 @@ type Newsletter interface {
 	Unsubscribe(ctx context.Context, address, token string) (removed bool, err error)
 }
 
+// ApplicationInfo is what the reader pages show about the publication.
+type ApplicationInfo struct {
+	Name      string
+	DexWebURL string
+}
+
 type Handler struct {
 	newsletter Newsletter
+	info       ApplicationInfo
 	logger     *slog.Logger
 }
 
-func NewHandler(newsletter Newsletter, logger *slog.Logger) (*generated.Server, error) {
-	handler := &Handler{newsletter: newsletter, logger: logger}
+func NewHandler(newsletter Newsletter, info ApplicationInfo, logger *slog.Logger) (*generated.Server, error) {
+	handler := &Handler{newsletter: newsletter, info: info, logger: logger}
 	return generated.NewServer(handler,
 		generated.WithErrorHandler(writeGeneratedError),
 		generated.WithNotFound(func(w http.ResponseWriter, _ *http.Request) {
@@ -38,6 +45,14 @@ func NewHandler(newsletter Newsletter, logger *slog.Logger) (*generated.Server, 
 
 func (handler *Handler) GetHealth(context.Context) (*generated.HealthResponse, error) {
 	return &generated.HealthResponse{Status: generated.HealthResponseStatusOk}, nil
+}
+
+func (handler *Handler) GetApplicationInfo(context.Context) (*generated.ApplicationInfo, error) {
+	info := &generated.ApplicationInfo{Name: handler.info.Name}
+	if handler.info.DexWebURL != "" {
+		info.DexWebUrl = generated.NewOptString(handler.info.DexWebURL)
+	}
+	return info, nil
 }
 
 func (handler *Handler) SubscribeToNewsletter(ctx context.Context, request *generated.SubscriptionRequest) (generated.SubscribeToNewsletterRes, error) {

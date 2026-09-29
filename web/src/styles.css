@@ -1,107 +1,22 @@
-:root {
-  --ink: #16181d;
-  --muted: #5c6370;
-  --line: #e4e6eb;
-  --accent: #3b5bdb;
-  --accent-ink: #ffffff;
-  --paper: #ffffff;
-  --wash: #f6f7f9;
-  --danger: #c92a2a;
-  color-scheme: light dark;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --ink: #e8eaee;
-    --muted: #9aa1ad;
-    --line: #2a2e36;
-    --accent: #8ea4ff;
-    --accent-ink: #0d1020;
-    --paper: #111317;
-    --wash: #181b20;
-    --danger: #ff8787;
-  }
-}
-
+:root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #e8edf8; background: #07111f; font-synthesis: none; }
 * { box-sizing: border-box; }
-
-body {
-  margin: 0;
-  min-height: 100vh;
-  background: var(--wash);
-  color: var(--ink);
-  font: 17px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, sans-serif;
-}
-
-main {
-  max-width: 34rem;
-  margin: 12vh auto 4rem;
-  padding: 2.5rem 2.25rem;
-  background: var(--paper);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-}
-
-.eyebrow {
-  margin: 0;
-  color: var(--accent);
-  font-size: 0.8rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-h1 {
-  margin: 0.5rem 0 0.75rem;
-  font-size: clamp(1.6rem, 4vw, 2.1rem);
-  line-height: 1.2;
-  letter-spacing: -0.02em;
-}
-
-.lede { margin: 0 0 1.75rem; color: var(--muted); }
-
-label { display: block; margin-bottom: 0.4rem; font-size: 0.9rem; font-weight: 600; }
-
-.row { display: flex; gap: 0.5rem; }
-
-input {
-  flex: 1;
-  min-width: 0;
-  padding: 0.7rem 0.85rem;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--paper);
-  color: var(--ink);
-  font: inherit;
-}
-
-input:focus-visible, button:focus-visible, a:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-input[aria-invalid='true'] { border-color: var(--danger); }
-
-button {
-  padding: 0.7rem 1.2rem;
-  border: 0;
-  border-radius: 8px;
-  background: var(--accent);
-  color: var(--accent-ink);
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-button:disabled { opacity: 0.55; cursor: not-allowed; }
-
-.error { margin: 0.75rem 0 0; color: var(--danger); font-size: 0.92rem; }
-
-.note { margin: 1.5rem 0 0; color: var(--muted); font-size: 0.85rem; }
-
-a { color: var(--accent); }
-
-@media (max-width: 30rem) {
-  main { margin: 0; min-height: 100vh; border: 0; border-radius: 0; padding: 2rem 1.25rem; }
-  .row { flex-direction: column; }
-}
+body { margin: 0; min-width: 320px; min-height: 100vh; background: radial-gradient(circle at 80% 0%, #18385a 0, transparent 35%), #07111f; }
+main { width: min(760px, calc(100% - 40px)); margin: 0 auto; padding: 72px 0; }
+h1 { margin: 8px 0 16px; font-size: clamp(2.4rem, 7vw, 4.6rem); line-height: .96; letter-spacing: -.05em; }
+.eyebrow { margin: 0; color: #6ae4c4; font-size: .72rem; font-weight: 800; letter-spacing: .2em; }
+.lede { color: #aab8cc; font-size: 1.15rem; }
+.dex-web-link { display: inline-block; padding: 12px 16px; border-radius: 12px; color: #06131f; background: #6ae4c4; font-weight: 800; text-decoration: none; }
+.dex-web-link:focus-visible, .text-link:focus-visible { outline: 3px solid #e8edf8; outline-offset: 3px; }
+.text-link { color: #6ae4c4; font-weight: 700; }
+.panel { margin-top: 18px; padding: 24px; border: 1px solid #29415d; border-radius: 20px; background: rgba(12, 28, 47, .88); box-shadow: 0 24px 80px rgba(0, 0, 0, .25); }
+label { display: block; margin-bottom: 10px; font-size: .82rem; font-weight: 700; color: #aab8cc; }
+.form-row { display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+input { flex: 1; min-width: 0; padding: 14px 16px; border: 1px solid #36506d; border-radius: 12px; color: white; background: #091727; font: inherit; }
+input:focus-visible { outline: 2px solid #6ae4c4; outline-offset: 2px; }
+input[aria-invalid='true'] { border-color: #ff9d9d; }
+button { padding: 13px 18px; border: 0; border-radius: 12px; background: #6ae4c4; color: #06131f; font: inherit; font-weight: 800; cursor: pointer; }
+button:focus-visible { outline: 3px solid #e8edf8; outline-offset: 3px; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+.error { color: #ff9d9d; }
+.panel .error { margin: 14px 0 0; }
+@media (max-width: 760px) { .form-row { align-items: stretch; flex-direction: column; } }

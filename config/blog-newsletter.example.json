@@ -11,7 +11,7 @@
     "commitsPerRepository": 50
   },
   "blog": {
-    "publicationName": "Engineering Notes",
+    "publicationName": "Dex Tech Blog",
     "artifactDirectory": "artifacts/blog",
     "postUrlTemplate": ""
   },

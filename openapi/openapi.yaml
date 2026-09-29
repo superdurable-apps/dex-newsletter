@@ -15,6 +15,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthResponse'
+  /api/application-info:
+    get:
+      operationId: getApplicationInfo
+      responses:
+        '200':
+          description: Publication name and optional Dex Web link.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationInfo'
   /api/newsletter/subscriptions:
     post:
       operationId: subscribeToNewsletter
@@ -59,6 +69,15 @@ paths:
           $ref: '#/components/responses/Unavailable'
 components:
   schemas:
+    ApplicationInfo:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+        dexWebUrl:
+          type: string
     SubscriptionRequest:
       type: object
       additionalProperties: false
