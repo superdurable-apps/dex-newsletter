@@ -190,16 +190,6 @@ func TestSlackApprovalGuards(t *testing.T) {
 			t.Errorf("slackTimestampAfter(%q, %q) = %v", testCase.later, testCase.earlier, got)
 		}
 	}
-	for text, want := range map[string]int64{
-		"*Draft 3 ready for review*: Title":   3,
-		"*Draft 12, edited in the editor*: T": 12,
-		"Draft 3 approved by <@U1>.":          0,
-		"Thanks, revising":                    0,
-	} {
-		if got := postedDraftVersion(text); got != want {
-			t.Errorf("postedDraftVersion(%q) = %d, want %d", text, got, want)
-		}
-	}
 	posted := SlackReviewPost{Version: 2, Timestamp: "1790648252.000100"}
 	if refusal := slackApprovalRefusal(2, posted, "1790648252.000200"); refusal != "" {
 		t.Fatalf("a reply after the current post was refused: %s", refusal)

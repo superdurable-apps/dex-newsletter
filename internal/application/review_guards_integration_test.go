@@ -42,6 +42,7 @@ func TestSlackApproveCountsOnlyForThePostedVersion(t *testing.T) {
 	if saved, err := h.app.Drafts.Save(ctx, flowID, token, blogpost.SaveDraftEditsInput{BaseVersion: 1, Blog: blog, Newsletter: newsletter}); err != nil || saved.Outcome != blogpost.OutcomeSaved {
 		t.Fatalf("save = %+v, %v", saved, err)
 	}
+	// The run records the version it posted; the fake echoes placeholder text, so nothing may parse it.
 	h.waitForPostedDraft(ctx, flowID, 2)
 
 	if outcome := h.invokeSlackReview(ctx, early); outcome != blogpost.OutcomeIgnored {
