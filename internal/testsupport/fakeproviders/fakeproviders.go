@@ -120,8 +120,10 @@ func (fake *Providers) serveSlack(response http.ResponseWriter, request *http.Re
 	now := time.Now()
 	timestamp := fmt.Sprintf("%d.%06d", now.Unix(), now.Nanosecond()/1000)
 	_ = count
+	// Real Slack may normalise or omit the echoed text, so the fake returns a placeholder: nothing
+	// in the application may recover the draft version from a posted message's text.
 	writeJSON(response, map[string]any{"ok": true, "channel": payload["channel"], "ts": timestamp,
-		"message": map[string]any{"ts": timestamp, "thread_ts": payload["thread_ts"], "user": "UBOT", "text": payload["text"]}})
+		"message": map[string]any{"ts": timestamp, "thread_ts": payload["thread_ts"], "user": "UBOT", "text": "posted by the fake Slack"}})
 }
 
 func (fake *Providers) serveGitHub(response http.ResponseWriter, request *http.Request, path string) {
