@@ -212,27 +212,11 @@ components:
         sections: {type: array, maxItems: 30, items: {$ref: '#/components/schemas/BlogSection'}}
         highlights: {type: array, maxItems: 30, items: {$ref: '#/components/schemas/BlogHighlight'}}
         closing: {type: string, maxLength: 5000}
-    NewsletterItem:
-      type: object
-      additionalProperties: false
-      required: [title, summary]
-      properties:
-        title: {type: string, maxLength: 1000}
-        summary: {type: string, maxLength: 3000}
-    NewsletterDraft:
-      type: object
-      additionalProperties: false
-      required: [subject, preheader, intro, items, closing]
-      properties:
-        subject: {type: string, maxLength: 1000}
-        preheader: {type: string, maxLength: 1000}
-        intro: {type: string, maxLength: 5000}
-        items: {type: array, maxItems: 30, items: {$ref: '#/components/schemas/NewsletterItem'}}
-        closing: {type: string, maxLength: 5000}
     DraftEditorView:
       type: object
       additionalProperties: false
-      required: [runId, status, editable, draftVersion, revisionCount, blog, newsletter, blogHtml, newsletterHtml]
+      description: The post and its two renderings; the email is the same post in email formatting.
+      required: [runId, status, editable, draftVersion, revisionCount, blog, blogHtml, emailSubject, emailHtml]
       properties:
         runId: {type: string}
         status: {type: string}
@@ -240,35 +224,34 @@ components:
         draftVersion: {type: integer, format: int64}
         revisionCount: {type: integer, format: int64}
         blog: {$ref: '#/components/schemas/BlogDraft'}
-        newsletter: {$ref: '#/components/schemas/NewsletterDraft'}
         blogHtml: {type: string}
-        newsletterHtml: {type: string}
+        emailSubject: {type: string}
+        emailHtml: {type: string}
     DraftSaveRequest:
       type: object
       additionalProperties: false
-      required: [token, baseVersion, blog, newsletter]
+      required: [token, baseVersion, blog]
       properties:
         token: {type: string, minLength: 1, maxLength: 128}
         baseVersion: {type: integer, format: int64}
         blog: {$ref: '#/components/schemas/BlogDraft'}
-        newsletter: {$ref: '#/components/schemas/NewsletterDraft'}
     DraftPreviewRequest:
       type: object
       additionalProperties: false
-      required: [token, blog, newsletter]
+      required: [token, blog]
       properties:
         token: {type: string, minLength: 1, maxLength: 128}
         blog: {$ref: '#/components/schemas/BlogDraft'}
-        newsletter: {$ref: '#/components/schemas/NewsletterDraft'}
     DraftPreview:
       type: object
       additionalProperties: false
-      required: [valid, blogHtml, newsletterHtml]
+      required: [valid, blogHtml, emailSubject, emailHtml]
       properties:
         valid: {type: boolean}
         message: {type: string}
         blogHtml: {type: string}
-        newsletterHtml: {type: string}
+        emailSubject: {type: string}
+        emailHtml: {type: string}
     DraftApprovalRequest:
       type: object
       additionalProperties: false

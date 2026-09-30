@@ -44,7 +44,6 @@ const (
 	stepListPullRequestFiles  = "ListPullRequestFiles"
 	stepListRepositoryCommits = "ListRepositoryCommits"
 	stepWriteBlogPost         = "WriteBlogPost"
-	stepWriteNewsletter       = "WriteNewsletter"
 	stepSendNewsletterEmail   = "SendNewsletterEmail"
 	stepPostSlackNotice       = "PostSlackNotice"
 	stepPostSlackReviewDraft  = "PostSlackReviewDraft"
@@ -72,12 +71,11 @@ const (
 
 // Stages name where a run stopped, so Retry resumes the right Step.
 const (
-	StageInterpret       = "interpret"
-	StageListOwners      = "list-repositories"
-	StageChoose          = "choose-repositories"
-	StageWriteBlog       = "write-blog"
-	StageWriteNewsletter = "write-newsletter"
-	StageDeliver         = "deliver"
+	StageInterpret  = "interpret"
+	StageListOwners = "list-repositories"
+	StageChoose     = "choose-repositories"
+	StageWriteBlog  = "write-blog"
+	StageDeliver    = "deliver"
 )
 
 const (
@@ -122,14 +120,6 @@ type ResearchCursor struct {
 
 type RevisionRequest struct {
 	Notes string `json:"notes,omitempty"`
-}
-
-type NewsletterWritingInput struct {
-	Draft           content.BlogDraft `json:"draft"`
-	PublicationName string            `json:"publicationName"`
-	// EditorNotes and PreviousNewsletter are set for a revision, so feedback about the email reaches it.
-	EditorNotes        string                   `json:"editorNotes,omitempty"`
-	PreviousNewsletter *content.NewsletterDraft `json:"previousNewsletter,omitempty"`
 }
 
 type OutgoingEmail struct {
@@ -180,10 +170,10 @@ type SlackReviewPost struct {
 	Timestamp string `json:"timestamp,omitempty"`
 }
 
-// DeliveryDraft is the newsletter version approval fixed for every recipient.
+// DeliveryDraft is the post version approval fixed for every recipient.
 type DeliveryDraft struct {
-	Newsletter content.NewsletterDraft `json:"newsletter"`
-	Slug       string                  `json:"slug"`
+	Blog   content.BlogDraft `json:"blog"`
+	Window content.Window    `json:"window"`
 }
 
 // DraftEditsSaved asks ApplyDraftEdits to publish one saved editor version.
@@ -231,9 +221,6 @@ var (
 	blogPreview          = dex.DefineAttribute[string]("blog-preview")
 	blogHTML             = dex.DefineAttribute[string]("blog-html")
 	blogArtifactPath     = dex.DefineAttribute[string]("blog-artifact-path")
-	newsletterDraft      = dex.DefineAttribute[content.NewsletterDraft]("newsletter-draft")
-	newsletterSubject    = dex.DefineAttribute[string]("newsletter-subject")
-	newsletterPreview    = dex.DefineAttribute[string]("newsletter-preview")
 	deliveryRecipients   = dex.DefineAttribute[[]string]("delivery-recipients")
 	deliveryProgress     = dex.DefineAttribute[DeliveryProgress]("delivery-progress")
 	deliverySummary      = dex.DefineAttribute[string]("delivery-summary")
@@ -251,7 +238,7 @@ var (
 		blogStatus, blogTopic, blogRequester, blogRequest, changeWindow, windowLabel, blogTitle, attentionStage,
 		attentionReason, reviewRound, revisionCount, editorNotes, ownerCursor, candidateRepos, selectedRepos,
 		researchCursor, repositoryResearch, researchSummary, blogDraft, blogPreview, blogHTML, blogArtifactPath,
-		newsletterDraft, newsletterSubject, newsletterPreview, deliveryRecipients, deliveryProgress, deliverySummary,
+		deliveryRecipients, deliveryProgress, deliverySummary,
 		deliveryExceptions, slackNoticeStatus, draftVersion, reviewHistory, slackReviewEvents, editorURL,
 		slackReviewPost, pendingReviewPost, deliveryDraft,
 	}
@@ -264,10 +251,9 @@ type SubscriberDirectory interface {
 
 // Models are the Dex Web model picks per generation Step; empty uses the llm connection's default.
 type Models struct {
-	Interpret       string
-	Choose          string
-	WriteBlog       string
-	WriteNewsletter string
+	Interpret string
+	Choose    string
+	WriteBlog string
 }
 
 type Dependencies struct {
@@ -296,7 +282,7 @@ func ModelConfigurationRef(stepType string) sdkgo.ConnectorConfigurationRef {
 }
 
 // ModelStepTypes lists the generation Steps whose model Dex Web can pick.
-var ModelStepTypes = []string{stepInterpretBlogRequest, stepChooseRepositories, stepWriteBlogPost, stepWriteNewsletter}
+var ModelStepTypes = []string{stepInterpretBlogRequest, stepChooseRepositories, stepWriteBlogPost}
 
 type Flow struct {
 	dex.FlowDefaults
@@ -414,21 +400,6 @@ func (flow *Flow) GetSteps() []dex.StepDef {
 			InvalidResponse: sdkgo.GoTo(RecordBlogDraft{}), Defect: sdkgo.GoTo(RecordBlogDraft{}),
 		})),
 		dex.DefineStep(RecordBlogDraft{flow: flow}),
-		dex.DefineStep(llmrouter.NewGenerateTextStep(llmrouter.GenerateTextStepConfig[NewsletterWritingInput]{
-			StepType: stepWriteNewsletter, ConnectionName: LLMConnectionName, Connection: flow.deps.LLM,
-			Annotations: sdkgo.StepAnnotations{GroupID: "writing", GroupLabel: "Writing", Explanation: "Ask the model for the newsletter email based on the blog draft."},
-			ConfigurationUI: sdkgo.ConnectorConfigurationUI{Units: []sdkgo.ConnectorUIUnit{{
-				ID: "model", UnitID: llmrouter.UIUnitModelPicker, Label: "Newsletter writing model", Description: "Choose the provider/model that writes the newsletter email; blank keeps the connection's default model.",
-				Bindings: []sdkgo.ConnectorUIBinding{{Port: llmrouter.UIModelPickerPortModel, JSONPointer: "/model"}},
-			}}},
-			MapToOperationInput: func(input NewsletterWritingInput) llmrouter.GenerateTextRequest {
-				return content.NewsletterWritingRequest(flow.deps.Models.WriteNewsletter, input.Draft, input.PublicationName, input.EditorNotes, input.PreviousNewsletter)
-			},
-			Generated: sdkgo.GoTo(RecordNewsletterDraft{}), Truncated: sdkgo.GoTo(RecordNewsletterDraft{}),
-			Blocked: sdkgo.GoTo(RecordNewsletterDraft{}), ProviderRejected: sdkgo.GoTo(RecordNewsletterDraft{}),
-			InvalidResponse: sdkgo.GoTo(RecordNewsletterDraft{}), Defect: sdkgo.GoTo(RecordNewsletterDraft{}),
-		})),
-		dex.DefineStep(RecordNewsletterDraft{flow: flow}),
 		dex.DefineStep(EnterReview{flow: flow}),
 		dex.DefineStep(ApplyDraftEdits{flow: flow}),
 		dex.DefineStep(EnterNeedsAttention{flow: flow}),
@@ -908,7 +879,7 @@ func (step PrepareBlogWriting) Execute(ctx dex.Context, revision RevisionRequest
 }
 
 // dex:group group-id:writing group-label:"Writing"
-// dex:explanation text:"Ground the draft's links in the research, render the self-contained HTML artifact, and ask for the newsletter."
+// dex:explanation text:"Ground the draft's links in the research, render the self-contained HTML artifact, and open the review; the email sends this same post."
 type RecordBlogDraft struct {
 	dex.StepDefaultsNoWaitFor[llmrouter.GenerateTextResult]
 	flow *Flow
@@ -971,41 +942,6 @@ func (step RecordBlogDraft) Execute(ctx dex.Context, result llmrouter.GenerateTe
 	if err := draftVersion.Set(ctx, version+1); err != nil {
 		return nil, err
 	}
-	input, err := step.flow.newsletterWritingInput(ctx, draft)
-	if err != nil {
-		return nil, err
-	}
-	return dex.GoTo(sdkgo.StepRef[NewsletterWritingInput](stepWriteNewsletter), input), nil
-}
-
-// dex:group group-id:writing group-label:"Writing"
-// dex:explanation text:"Keep the newsletter draft and its plain-text preview, then open the review."
-type RecordNewsletterDraft struct {
-	dex.StepDefaultsNoWaitFor[llmrouter.GenerateTextResult]
-	flow *Flow
-}
-
-func (RecordNewsletterDraft) GetStepType() string { return "RecordNewsletterDraft" }
-
-func (step RecordNewsletterDraft) Execute(ctx dex.Context, result llmrouter.GenerateTextResult) (*dex.StepDecision, error) {
-	draft, reason := parseGenerated(result, content.ParseNewsletterDraft)
-	if reason != "" {
-		return dex.GoTo(EnterNeedsAttention{}, Attention{Stage: StageWriteNewsletter, Reason: "Writing the newsletter failed: " + reason}), nil
-	}
-	blog, err := blogDraft.Get(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if err := newsletterDraft.Set(ctx, draft); err != nil {
-		return nil, err
-	}
-	if err := newsletterSubject.Set(ctx, draft.Subject); err != nil {
-		return nil, err
-	}
-	preview := content.RenderNewsletterText(step.flow.newsletterEmail(draft, blog.Slug, "reader@example.com"))
-	if err := newsletterPreview.Set(ctx, preview); err != nil {
-		return nil, err
-	}
 	return dex.GoTo(EnterReview{}, nil), nil
 }
 
@@ -1043,10 +979,6 @@ func (step EnterReview) Execute(ctx dex.Context, _ dex.None) (*dex.StepDecision,
 	if err != nil {
 		return nil, err
 	}
-	newsletter, err := newsletterPreview.Get(ctx)
-	if err != nil {
-		return nil, err
-	}
 	summary, err := researchSummary.Get(ctx)
 	if err != nil {
 		return nil, err
@@ -1064,7 +996,7 @@ func (step EnterReview) Execute(ctx dex.Context, _ dex.None) (*dex.StepDecision,
 		return nil, err
 	}
 	heading := fmt.Sprintf("*Draft %d ready for review*: %s", version, content.SlackText(draft.Title))
-	message := content.SlackReviewMessage(heading, draft, newsletter, summary, link, step.flow.runLink(ctx))
+	message := content.SlackReviewMessage(heading, draft, summary, link, step.flow.runLink(ctx))
 	return dex.GoToMany(
 		dex.MovementOf(sdkgo.StepRef[SlackNotice](stepPostSlackReviewDraft), noticeFor(request, message)),
 		dex.MovementOf(AwaitEditorDecision{}, nil),
@@ -1128,10 +1060,6 @@ func (step ApplyDraftEdits) Execute(ctx dex.Context, saved DraftEditsSaved) (*de
 	if link, err = orDefault(link, err, step.flow.deps.Editor.URL(ctx.FlowID())); err != nil {
 		return nil, err
 	}
-	newsletter, err := newsletterPreview.Get(ctx)
-	if err != nil {
-		return nil, err
-	}
 	summary, err := researchSummary.Get(ctx)
 	if err != nil {
 		return nil, err
@@ -1141,7 +1069,7 @@ func (step ApplyDraftEdits) Execute(ctx dex.Context, saved DraftEditsSaved) (*de
 	}
 	// Post the whole edited draft, so a Slack approval approves text the reviewers can read.
 	heading := fmt.Sprintf("*Draft %d, edited in the editor*: %s", saved.Version, content.SlackText(draft.Title))
-	message := content.SlackReviewMessage(heading, draft, newsletter, summary, link, step.flow.runLink(ctx))
+	message := content.SlackReviewMessage(heading, draft, summary, link, step.flow.runLink(ctx))
 	return dex.GoTo(sdkgo.StepRef[SlackNotice](stepPostSlackReviewDraft), noticeFor(request, message)), nil
 }
 
@@ -1269,16 +1197,6 @@ func (step AwaitEditorDecision) Execute(ctx dex.Context, _ dex.None) (*dex.StepD
 			return nil, err
 		}
 		return dex.GoTo(sdkgo.StepRef[content.RepositoryChoiceInput](stepChooseRepositories), input), nil
-	case StageWriteNewsletter:
-		draft, err := blogDraft.Get(ctx)
-		if err != nil {
-			return nil, err
-		}
-		input, err := step.flow.newsletterWritingInput(ctx, draft)
-		if err != nil {
-			return nil, err
-		}
-		return dex.GoTo(sdkgo.StepRef[NewsletterWritingInput](stepWriteNewsletter), input), nil
 	case StageDeliver:
 		email, err := step.flow.nextEmail(ctx)
 		if err != nil {
@@ -1326,16 +1244,16 @@ func (step StartNewsletterDelivery) Execute(ctx dex.Context, _ dex.None) (*dex.S
 	if err := blogStatus.Set(ctx, StatusDelivering); err != nil {
 		return nil, err
 	}
-	newsletter, err := newsletterDraft.Get(ctx)
-	if err != nil {
-		return nil, err
-	}
 	blog, err := blogDraft.Get(ctx)
 	if err != nil {
 		return nil, err
 	}
+	window, err := changeWindow.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
 	// Every recipient gets this approved version, even if the draft Attributes change later.
-	if err := deliveryDraft.Set(ctx, DeliveryDraft{Newsletter: newsletter, Slug: blog.Slug}); err != nil {
+	if err := deliveryDraft.Set(ctx, DeliveryDraft{Blog: blog, Window: window}); err != nil {
 		return nil, err
 	}
 	if len(recipients) == 0 {
@@ -1587,14 +1505,14 @@ const (
 
 // EditableDraft is the editor's view of the current draft, rendered as it will ship.
 type EditableDraft struct {
-	Status         string                  `json:"status"`
-	Editable       bool                    `json:"editable"`
-	DraftVersion   int64                   `json:"draftVersion"`
-	RevisionCount  int64                   `json:"revisionCount"`
-	Blog           content.BlogDraft       `json:"blog"`
-	Newsletter     content.NewsletterDraft `json:"newsletter"`
-	BlogHTML       string                  `json:"blogHtml"`
-	NewsletterHTML string                  `json:"newsletterHtml"`
+	Status        string            `json:"status"`
+	Editable      bool              `json:"editable"`
+	DraftVersion  int64             `json:"draftVersion"`
+	RevisionCount int64             `json:"revisionCount"`
+	Blog          content.BlogDraft `json:"blog"`
+	BlogHTML      string            `json:"blogHtml"`
+	EmailSubject  string            `json:"emailSubject"`
+	EmailHTML     string            `json:"emailHtml"`
 }
 
 // GetDraftForEditing returns the current draft and its published rendering; terminal runs stay readable.
@@ -1615,16 +1533,12 @@ func (flow *Flow) GetDraftForEditing(ctx dex.Context, _ dex.None) (*dex.RPCResul
 	if err != nil {
 		return nil, err
 	}
-	newsletter, err := newsletterDraft.Get(ctx)
-	if err != nil {
-		return nil, err
-	}
 	view := EditableDraft{
 		Status: status, Editable: status == StatusAwaitingReview, DraftVersion: version, RevisionCount: revisions,
-		Blog: blog, Newsletter: newsletter,
+		Blog: blog, EmailSubject: content.EmailSubject(blog),
 	}
 	if blog.Title != "" {
-		if view.BlogHTML, view.NewsletterHTML, err = flow.renderPreview(ctx, blog, newsletter); err != nil {
+		if view.BlogHTML, view.EmailHTML, err = flow.renderPreview(ctx, blog); err != nil {
 			return nil, err
 		}
 	}
@@ -1632,15 +1546,15 @@ func (flow *Flow) GetDraftForEditing(ctx dex.Context, _ dex.None) (*dex.RPCResul
 }
 
 type PreviewDraftEditsInput struct {
-	Blog       content.BlogDraft       `json:"blog"`
-	Newsletter content.NewsletterDraft `json:"newsletter"`
+	Blog content.BlogDraft `json:"blog"`
 }
 
 type DraftPreview struct {
-	Valid          bool   `json:"valid"`
-	Message        string `json:"message,omitempty"`
-	BlogHTML       string `json:"blogHtml"`
-	NewsletterHTML string `json:"newsletterHtml"`
+	Valid        bool   `json:"valid"`
+	Message      string `json:"message,omitempty"`
+	BlogHTML     string `json:"blogHtml"`
+	EmailSubject string `json:"emailSubject"`
+	EmailHTML    string `json:"emailHtml"`
 }
 
 // PreviewDraftEdits renders unsaved edits as they would ship, without changing the run.
@@ -1649,22 +1563,20 @@ func (flow *Flow) PreviewDraftEdits(ctx dex.Context, input PreviewDraftEditsInpu
 	if err != nil {
 		return nil, err
 	}
-	blog, blogErr := content.ValidateEditedBlog(input.Blog, original)
-	newsletter, newsletterErr := content.ValidateEditedNewsletter(input.Newsletter)
-	if problems := errors.Join(blogErr, newsletterErr); problems != nil {
-		return &dex.RPCResult[DraftPreview]{Output: DraftPreview{Message: problems.Error()}}, nil
+	blog, err := content.ValidateEditedBlog(input.Blog, original)
+	if err != nil {
+		return &dex.RPCResult[DraftPreview]{Output: DraftPreview{Message: err.Error()}}, nil
 	}
-	blogPage, email, err := flow.renderPreview(ctx, blog, newsletter)
+	blogPage, email, err := flow.renderPreview(ctx, blog)
 	if err != nil {
 		return nil, err
 	}
-	return &dex.RPCResult[DraftPreview]{Output: DraftPreview{Valid: true, BlogHTML: blogPage, NewsletterHTML: email}}, nil
+	return &dex.RPCResult[DraftPreview]{Output: DraftPreview{Valid: true, BlogHTML: blogPage, EmailSubject: content.EmailSubject(blog), EmailHTML: email}}, nil
 }
 
 type SaveDraftEditsInput struct {
-	BaseVersion int64                   `json:"baseVersion"`
-	Blog        content.BlogDraft       `json:"blog"`
-	Newsletter  content.NewsletterDraft `json:"newsletter"`
+	BaseVersion int64             `json:"baseVersion"`
+	Blog        content.BlogDraft `json:"blog"`
 }
 
 type DraftEditResult struct {
@@ -1673,8 +1585,8 @@ type DraftEditResult struct {
 	DraftVersion int64  `json:"draftVersion"`
 }
 
-// SaveDraftEdits replaces the draft with the editor's version when nothing changed since it loaded.
-// The new version becomes what approval publishes and emails.
+// SaveDraftEdits replaces the post with the editor's version when nothing changed since it loaded.
+// The new version becomes what approval publishes and emails: the email is the same post.
 func (flow *Flow) SaveDraftEdits(ctx dex.Context, input SaveDraftEditsInput) (*dex.RPCResult[DraftEditResult], error) {
 	status, err := blogStatus.Get(ctx)
 	if err != nil {
@@ -1694,10 +1606,9 @@ func (flow *Flow) SaveDraftEdits(ctx dex.Context, input SaveDraftEditsInput) (*d
 	if err != nil {
 		return nil, err
 	}
-	blog, blogErr := content.ValidateEditedBlog(input.Blog, original)
-	newsletter, newsletterErr := content.ValidateEditedNewsletter(input.Newsletter)
-	if problems := errors.Join(blogErr, newsletterErr); problems != nil {
-		return &dex.RPCResult[DraftEditResult]{Output: DraftEditResult{Outcome: OutcomeInvalid, DraftVersion: version, Message: problems.Error()}}, nil
+	blog, err := content.ValidateEditedBlog(input.Blog, original)
+	if err != nil {
+		return &dex.RPCResult[DraftEditResult]{Output: DraftEditResult{Outcome: OutcomeInvalid, DraftVersion: version, Message: err.Error()}}, nil
 	}
 	if err := blogDraft.Set(ctx, blog); err != nil {
 		return nil, err
@@ -1706,15 +1617,6 @@ func (flow *Flow) SaveDraftEdits(ctx dex.Context, input SaveDraftEditsInput) (*d
 		return nil, err
 	}
 	if err := blogPreview.Set(ctx, content.RenderBlogText(blog)); err != nil {
-		return nil, err
-	}
-	if err := newsletterDraft.Set(ctx, newsletter); err != nil {
-		return nil, err
-	}
-	if err := newsletterSubject.Set(ctx, newsletter.Subject); err != nil {
-		return nil, err
-	}
-	if err := newsletterPreview.Set(ctx, content.RenderNewsletterText(flow.newsletterEmail(newsletter, blog.Slug, "reader@example.com"))); err != nil {
 		return nil, err
 	}
 	if err := draftVersion.Set(ctx, version+1); err != nil {
@@ -1944,26 +1846,6 @@ func orDefault[T any](value T, err error, fallback T) (T, error) {
 	return value, err
 }
 
-// newsletterWritingInput asks for the email; on a revision it carries the notes and the current email.
-func (flow *Flow) newsletterWritingInput(ctx dex.Context, draft content.BlogDraft) (NewsletterWritingInput, error) {
-	input := NewsletterWritingInput{Draft: draft, PublicationName: flow.deps.Config.Blog.PublicationName}
-	revisions, err := revisionCount.Get(ctx)
-	if err != nil || revisions == 0 {
-		return input, err
-	}
-	if input.EditorNotes, err = editorNotes.Get(ctx); err != nil {
-		return NewsletterWritingInput{}, err
-	}
-	previous, err := newsletterDraft.Get(ctx)
-	if err != nil {
-		return NewsletterWritingInput{}, err
-	}
-	if previous.Subject != "" {
-		input.PreviousNewsletter = &previous
-	}
-	return input, nil
-}
-
 func appendReviewEvent(history []ReviewEvent, event ReviewEvent) []ReviewEvent {
 	if runes := []rune(event.Detail); len(runes) > 300 {
 		event.Detail = string(runes[:300]) + "…"
@@ -2040,8 +1922,6 @@ func (*Flow) GetDexSummary(ctx dex.Context, _ dex.None) (*dex.RPCResult[map[stri
 // dex:field attribute-key:selected-repositories value-type:array editable:false description:"Repositories and focus areas"
 // dex:field attribute-key:blog-preview value-type:string editable:false description:"Blog draft"
 // dex:field attribute-key:blog-artifact-path value-type:string editable:false description:"Blog HTML artifact"
-// dex:field attribute-key:newsletter-subject value-type:string editable:false description:"Newsletter subject"
-// dex:field attribute-key:newsletter-preview value-type:string editable:false description:"Newsletter email"
 // dex:field attribute-key:revision-count value-type:int64 editable:false description:"Revisions"
 // dex:field attribute-key:editor-notes value-type:string editable:false description:"Latest revision notes"
 // dex:field attribute-key:delivery-summary value-type:string editable:false description:"Delivery"
@@ -2085,14 +1965,6 @@ func (flow *Flow) GetDexDisplay(ctx dex.Context, _ dex.None) (*dex.RPCResult[map
 		return nil, err
 	}
 	path, err := blogArtifactPath.Get(ctx)
-	if err != nil {
-		return nil, err
-	}
-	subject, err := newsletterSubject.Get(ctx)
-	if err != nil {
-		return nil, err
-	}
-	email, err := newsletterPreview.Get(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -2146,8 +2018,6 @@ func (flow *Flow) GetDexDisplay(ctx dex.Context, _ dex.None) (*dex.RPCResult[map
 		"selected-repositories": repositories,
 		"blog-preview":          preview,
 		"blog-artifact-path":    path,
-		"newsletter-subject":    subject,
-		"newsletter-preview":    email,
 		"revision-count":        revisions,
 		"editor-notes":          notes,
 		"delivery-summary":      delivery,
@@ -2175,9 +2045,6 @@ func initializeBlogPost(ctx dex.Context, request SlackRequest) error {
 		func() error { return blogPreview.Set(ctx, "") },
 		func() error { return blogHTML.Set(ctx, "") },
 		func() error { return blogArtifactPath.Set(ctx, "") },
-		func() error { return newsletterDraft.Set(ctx, content.NewsletterDraft{}) },
-		func() error { return newsletterSubject.Set(ctx, "") },
-		func() error { return newsletterPreview.Set(ctx, "") },
 		func() error { return deliveryRecipients.Set(ctx, []string{}) },
 		func() error { return deliveryProgress.Set(ctx, DeliveryProgress{}) },
 		func() error { return deliverySummary.Set(ctx, "") },
@@ -2227,13 +2094,17 @@ func (flow *Flow) renderBlog(ctx dex.Context, draft content.BlogDraft) (string, 
 	return content.RenderBlogHTML(content.BlogPage{Draft: draft, PublicationName: flow.deps.Config.Blog.PublicationName, Window: window, Repositories: repositories})
 }
 
-// renderPreview renders the blog and a sample recipient's email exactly as they would ship.
-func (flow *Flow) renderPreview(ctx dex.Context, blog content.BlogDraft, newsletter content.NewsletterDraft) (string, string, error) {
+// renderPreview renders the post as published and as a sample recipient's email.
+func (flow *Flow) renderPreview(ctx dex.Context, blog content.BlogDraft) (string, string, error) {
 	blogPage, err := flow.renderBlog(ctx, blog)
 	if err != nil {
 		return "", "", err
 	}
-	email, err := content.RenderNewsletterHTML(flow.newsletterEmail(newsletter, blog.Slug, "reader@example.com"))
+	window, err := changeWindow.Get(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	email, err := content.RenderEmailHTML(flow.email(blog, window, "reader@example.com"))
 	return blogPage, email, err
 }
 
@@ -2248,36 +2119,26 @@ func (flow *Flow) nextEmail(ctx dex.Context) (OutgoingEmail, error) {
 		return OutgoingEmail{}, err
 	}
 	approved, err := deliveryDraft.Get(ctx)
-	var missing *dex.AttributeNotFoundError
-	if errors.As(err, &missing) {
-		// A delivery that began before the snapshot existed reads the current draft.
-		if approved.Newsletter, err = newsletterDraft.Get(ctx); err != nil {
-			return OutgoingEmail{}, err
-		}
-		blog, blogErr := blogDraft.Get(ctx)
-		if blogErr != nil {
-			return OutgoingEmail{}, blogErr
-		}
-		approved.Slug = blog.Slug
-	} else if err != nil {
-		return OutgoingEmail{}, err
-	}
-	address := recipients[progress.Next]
-	email := flow.newsletterEmail(approved.Newsletter, approved.Slug, address)
-	html, err := content.RenderNewsletterHTML(email)
 	if err != nil {
 		return OutgoingEmail{}, err
 	}
-	return OutgoingEmail{Address: address, Subject: approved.Newsletter.Subject, Text: content.RenderNewsletterText(email), HTML: html}, nil
+	address := recipients[progress.Next]
+	email := flow.email(approved.Blog, approved.Window, address)
+	html, err := content.RenderEmailHTML(email)
+	if err != nil {
+		return OutgoingEmail{}, err
+	}
+	return OutgoingEmail{Address: address, Subject: content.EmailSubject(approved.Blog), Text: content.RenderEmailText(email), HTML: html}, nil
 }
 
-func (flow *Flow) newsletterEmail(draft content.NewsletterDraft, slug, address string) content.NewsletterEmail {
+// email is one recipient's copy of the post.
+func (flow *Flow) email(draft content.BlogDraft, window content.Window, address string) content.Email {
 	blog := flow.deps.Config.Blog
 	postURL := ""
-	if blog.PostURLTemplate != "" && slug != "" {
-		postURL = strings.ReplaceAll(blog.PostURLTemplate, "{slug}", url.PathEscape(slug))
+	if blog.PostURLTemplate != "" && draft.Slug != "" {
+		postURL = strings.ReplaceAll(blog.PostURLTemplate, "{slug}", url.PathEscape(draft.Slug))
 	}
-	return content.NewsletterEmail{Draft: draft, PublicationName: blog.PublicationName, PostURL: postURL, UnsubscribeURL: flow.deps.Unsubscribe.URL(address)}
+	return content.Email{Draft: draft, PublicationName: blog.PublicationName, Window: window, PostURL: postURL, UnsubscribeURL: flow.deps.Unsubscribe.URL(address)}
 }
 
 func (flow *Flow) runLink(ctx dex.Context) string {
