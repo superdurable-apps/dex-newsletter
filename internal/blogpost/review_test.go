@@ -195,7 +195,7 @@ func TestSlackApprovalGuards(t *testing.T) {
 			t.Errorf("slackTimestampAfter(%q, %q) = %v", testCase.later, testCase.earlier, got)
 		}
 	}
-	posted := SlackReviewPost{Version: 2, Timestamp: "1790648252.000100"}
+	posted := SlackReviewPost{Version: 2, Complete: true, Timestamp: "1790648252.000100"}
 	if refusal := slackApprovalRefusal(2, posted, "1790648252.000200"); refusal != "" {
 		t.Fatalf("a reply after the current post was refused: %s", refusal)
 	}
@@ -205,7 +205,7 @@ func TestSlackApprovalGuards(t *testing.T) {
 	if refusal := slackApprovalRefusal(3, posted, "1790648299.000000"); !strings.Contains(refusal, "Draft 3 isn't in this thread yet") {
 		t.Fatalf("an unposted version = %q", refusal)
 	}
-	if refusal := slackApprovalRefusal(2, SlackReviewPost{Version: 2}, "1"); refusal != "" {
+	if refusal := slackApprovalRefusal(2, SlackReviewPost{Version: 2, Complete: true}, "1"); refusal != "" {
 		t.Fatalf("a run started before post timestamps were recorded was refused: %s", refusal)
 	}
 }
@@ -269,5 +269,16 @@ func TestModelStepTypesAreTheBlogWritingSteps(t *testing.T) {
 	// The email is the approved post, so no model writes a separate newsletter.
 	if want := []string{"InterpretBlogRequest", "ChooseRepositories", "WriteBlogPost"}; !reflect.DeepEqual(ModelStepTypes, want) {
 		t.Fatalf("ModelStepTypes = %q, want %q", ModelStepTypes, want)
+	}
+}
+
+func TestSlackApprovalNeedsTheWholePostInTheThread(t *testing.T) {
+	cut := SlackReviewPost{Version: 2, Complete: false, Timestamp: "1790648252.000100"}
+	if refusal := slackApprovalRefusal(2, cut, "1790648252.000200"); !strings.Contains(refusal, "too long to post here in full") {
+		t.Fatalf("approving a cut post = %q", refusal)
+	}
+	whole := SlackReviewPost{Version: 2, Complete: true, Timestamp: "1790648252.000100"}
+	if refusal := slackApprovalRefusal(2, whole, "1790648252.000200"); refusal != "" {
+		t.Fatalf("approving a complete post = %q", refusal)
 	}
 }

@@ -118,18 +118,23 @@ const maxSlackDraftRunes = 30000
 // carries the same content, so the draft appears once.
 // heading is the already-escaped first line, such as "*Draft 2 ready for review*: <title>".
 // Model text is escaped, so research text can never mention the channel or disguise a link.
-func SlackReviewMessage(heading string, blog BlogDraft, summary, editorURL, dexWebURL string) string {
-	var message strings.Builder
-	fmt.Fprintf(&message, "%s\nBased on %s. The email sends this same post, with the subject line \"%s\".\n\n",
+// complete is false when the post did not fit: approval then belongs in the editor, which shows it whole.
+func SlackReviewMessage(heading string, blog BlogDraft, summary, editorURL, dexWebURL string) (message string, complete bool) {
+	var post strings.Builder
+	fmt.Fprintf(&post, "%s\nBased on %s. The email sends this same post, with the subject line \"%s\".\n\n",
 		heading, SlackText(summary), SlackText(EmailSubject(blog)))
-	blogText := slackBlogText(blog)
+	blogText, complete := slackBlogText(blog), true
 	if runes := []rune(blogText); len(runes) > maxSlackDraftRunes {
-		blogText = string(runes[:maxSlackDraftRunes]) + "\n… (cut to fit Slack; the editor has the full post)"
+		blogText, complete = string(runes[:maxSlackDraftRunes])+"\n… (cut to fit Slack; the editor has the full post)", false
 	}
-	message.WriteString(blogText)
-	fmt.Fprintf(&message, "\n\n*Reply in this thread* with `approve` to send it, `reject` to stop, or any feedback to get a revised draft.\n"+
-		"Edit the text directly and approve in the editor: %s\nDex Web: %s", editorURL, dexWebURL)
-	return message.String()
+	post.WriteString(blogText)
+	closing := "\n\n*Reply in this thread* with `approve` to send it, `reject` to stop, or any feedback to get a revised draft.\n"
+	if !complete {
+		closing = "\n\n*This post is too long to post here in full, so reply `approve` will not send it.* Read it whole and approve it in the editor, " +
+			"or reply `reject` to stop or any feedback to get a revised draft.\n"
+	}
+	fmt.Fprintf(&post, closing+"Edit the text directly and approve in the editor: %s\nDex Web: %s", editorURL, dexWebURL)
+	return post.String(), complete
 }
 
 func slackBlogText(draft BlogDraft) string {
