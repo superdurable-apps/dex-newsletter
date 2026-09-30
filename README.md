@@ -149,9 +149,10 @@ emails, unsubscribe links, and the Dex Web removal Action.
   unsubscribe key, so replacing it revokes every editor link without breaking
   unsubscribe links. Put the editor behind your SSO before exposing it beyond a
   trusted team.
-- A Slack `approve` counts only for the draft version last posted in full to the
-  thread, and only when sent after that post. Otherwise the reply gets an
-  explanation and nothing is sent.
+- A Slack `approve` counts only for the draft version last posted to the thread
+  in full, and only when sent after that post. A post too long for one Slack
+  message says so and can be approved only in the editor, which shows it whole.
+  Otherwise the reply gets an explanation and nothing is sent.
 - The Slack reviewer list, like models and other connection settings, is read at
   startup: restart the application after changing reviewers.
 - Slack feedback after manual edits asks the model to revise the edited post, so

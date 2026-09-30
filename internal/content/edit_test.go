@@ -197,7 +197,10 @@ func TestSlackReviewMessage(t *testing.T) {
 	}
 	editorURL := "https://news.example.com/edit/blog-post-T-C1-1.0?token=0f0f"
 	dexWebURL := "https://dex.example.com/v2/runs/blog-post-T-C1-1.0"
-	message := SlackReviewMessage("*Draft 3 ready for review*: Connectors ship", blog, "12 merged pull requests in acme/connectors", editorURL, dexWebURL)
+	message, complete := SlackReviewMessage("*Draft 3 ready for review*: Connectors ship", blog, "12 merged pull requests in acme/connectors", editorURL, dexWebURL)
+	if !complete {
+		t.Fatal("a short post was reported as cut")
+	}
 	for _, want := range []string{
 		"*Draft 3 ready for review*: Connectors ship\nBased on 12 merged pull requests in acme/connectors. " +
 			"The email sends this same post, with the subject line \"Connectors ship\".\n\n" +
@@ -238,7 +241,7 @@ func TestSlackReviewMessageEscapesModelText(t *testing.T) {
 		Highlights: []BlogHighlight{{Title: "Plain <b>", Description: "<!everyone>"}},
 		Closing:    "Bye <#C1>",
 	}
-	message := SlackReviewMessage("*Draft 1 ready for review*: title", blog, "summary <x>", "https://news.example.com/e", "https://dex.example.com/r")
+	message, _ := SlackReviewMessage("*Draft 1 ready for review*: title", blog, "summary <x>", "https://news.example.com/e", "https://dex.example.com/r")
 	for _, raw := range []string{"<!channel>", "<!here>", "<!everyone>", "<https://phish.example", "<@U1>", "<#C1>", "<b>", "<x>"} {
 		if strings.Contains(message, raw) {
 			t.Errorf("message keeps Slack control text %q:\n%s", raw, message)
@@ -260,9 +263,16 @@ func TestSlackReviewMessageCutsLongDrafts(t *testing.T) {
 		blog.Sections = append(blog.Sections, BlogSection{Heading: "H", Paragraphs: []string{strings.Repeat("é", 2000), strings.Repeat("ü", 2000)}})
 	}
 	editorURL := "https://news.example.com/edit/run?token=ab"
-	message := SlackReviewMessage("*Draft 1 ready for review*: Long", blog, "summary", editorURL, "https://dex.example.com/v2/runs/run")
+	message, complete := SlackReviewMessage("*Draft 1 ready for review*: Long", blog, "summary", editorURL, "https://dex.example.com/v2/runs/run")
 	if !strings.Contains(message, "\n… (cut to fit Slack; the editor has the full post)") {
 		t.Fatal("an oversized post was not marked as cut")
+	}
+	// A cut post cannot be approved in Slack: the reviewer never saw all of what would be emailed.
+	if complete {
+		t.Fatal("a cut post was reported as complete")
+	}
+	if !strings.Contains(message, "reply `approve` will not send it") || !strings.Contains(message, "approve it in the editor") {
+		t.Fatalf("the cut post still invites a Slack approval:\n%.400s", message[len(message)-600:])
 	}
 	if !utf8.ValidString(message) {
 		t.Fatal("the cut split a character")

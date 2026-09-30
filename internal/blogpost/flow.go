@@ -166,7 +166,9 @@ type ReviewEvent struct {
 // SlackReviewPost is the latest draft version posted in full to the Slack thread, and when.
 // A Slack approve counts only for that version and only when sent after it was posted.
 type SlackReviewPost struct {
-	Version   int64  `json:"version"`
+	Version int64 `json:"version"`
+	// Complete is false when the post did not fit in one Slack message, so it cannot be approved there.
+	Complete  bool   `json:"complete"`
 	Timestamp string `json:"timestamp,omitempty"`
 }
 
@@ -231,7 +233,7 @@ var (
 	slackReviewEvents    = dex.DefineAttribute[[]string]("slack-review-events")
 	editorURL            = dex.DefineAttribute[string]("editor-url")
 	slackReviewPost      = dex.DefineAttribute[SlackReviewPost]("slack-review-post")
-	pendingReviewPost    = dex.DefineAttribute[int64]("pending-slack-review-version")
+	pendingReviewPost    = dex.DefineAttribute[SlackReviewPost]("pending-slack-review-post")
 	deliveryDraft        = dex.DefineAttribute[DeliveryDraft]("delivery-draft")
 	reviewDecisions      = dex.DefineChannel[ReviewDecision]("review-decisions")
 	allBlogPostAttribute = []dex.AttributeDef{
@@ -991,12 +993,12 @@ func (step EnterReview) Execute(ctx dex.Context, _ dex.None) (*dex.StepDecision,
 	if version, err = orDefault(version, err, 0); err != nil {
 		return nil, err
 	}
+	heading := fmt.Sprintf("*Draft %d ready for review*: %s", version, content.SlackText(draft.Title))
+	message, complete := content.SlackReviewMessage(heading, draft, summary, link, step.flow.runLink(ctx))
 	// The version travels in an Attribute, not in the text Slack echoes back.
-	if err := pendingReviewPost.Set(ctx, version); err != nil {
+	if err := pendingReviewPost.Set(ctx, SlackReviewPost{Version: version, Complete: complete}); err != nil {
 		return nil, err
 	}
-	heading := fmt.Sprintf("*Draft %d ready for review*: %s", version, content.SlackText(draft.Title))
-	message := content.SlackReviewMessage(heading, draft, summary, link, step.flow.runLink(ctx))
 	return dex.GoToMany(
 		dex.MovementOf(sdkgo.StepRef[SlackNotice](stepPostSlackReviewDraft), noticeFor(request, message)),
 		dex.MovementOf(AwaitEditorDecision{}, nil),
@@ -1064,12 +1066,12 @@ func (step ApplyDraftEdits) Execute(ctx dex.Context, saved DraftEditsSaved) (*de
 	if err != nil {
 		return nil, err
 	}
-	if err := pendingReviewPost.Set(ctx, saved.Version); err != nil {
-		return nil, err
-	}
 	// Post the whole edited draft, so a Slack approval approves text the reviewers can read.
 	heading := fmt.Sprintf("*Draft %d, edited in the editor*: %s", saved.Version, content.SlackText(draft.Title))
-	message := content.SlackReviewMessage(heading, draft, summary, link, step.flow.runLink(ctx))
+	message, complete := content.SlackReviewMessage(heading, draft, summary, link, step.flow.runLink(ctx))
+	if err := pendingReviewPost.Set(ctx, SlackReviewPost{Version: saved.Version, Complete: complete}); err != nil {
+		return nil, err
+	}
 	return dex.GoTo(sdkgo.StepRef[SlackNotice](stepPostSlackReviewDraft), noticeFor(request, message)), nil
 }
 
@@ -1386,17 +1388,22 @@ func (RecordSlackReviewPost) Execute(ctx dex.Context, result slack.PostThreadRep
 	if posted, err = orDefault(posted, err, SlackReviewPost{}); err != nil {
 		return nil, err
 	}
-	// The posting Step recorded which version it sent; Slack's echoed text is not parsed.
-	version, err := pendingReviewPost.Get(ctx)
-	if version, err = orDefault(version, err, 0); err != nil {
+	// The posting Step recorded which version it sent, and whether whole; Slack's text is not parsed.
+	pending, err := pendingReviewPost.Get(ctx)
+	if pending, err = orDefault(pending, err, SlackReviewPost{}); err != nil {
 		return nil, err
 	}
-	if version >= posted.Version {
-		if err := slackReviewPost.Set(ctx, SlackReviewPost{Version: version, Timestamp: result.Value.Message.Timestamp}); err != nil {
+	if pending.Version >= posted.Version {
+		pending.Timestamp = result.Value.Message.Timestamp
+		if err := slackReviewPost.Set(ctx, pending); err != nil {
 			return nil, err
 		}
 	}
-	if err := slackNoticeStatus.Set(ctx, fmt.Sprintf("Draft %d posted to Slack", version)); err != nil {
+	status := fmt.Sprintf("Draft %d posted to Slack", pending.Version)
+	if !pending.Complete {
+		status += " (cut to fit; approve it in the editor)"
+	}
+	if err := slackNoticeStatus.Set(ctx, status); err != nil {
 		return nil, err
 	}
 	return dex.DeadEnd(), nil
@@ -1735,7 +1742,7 @@ func (flow *Flow) ReceiveSlackReview(ctx dex.Context, reply SlackReviewReply) (*
 		}
 		posted, err := slackReviewPost.Get(ctx)
 		// A run started before posts were recorded has no record; its approvals work as before.
-		if posted, err = orDefault(posted, err, SlackReviewPost{Version: version}); err != nil {
+		if posted, err = orDefault(posted, err, SlackReviewPost{Version: version, Complete: true}); err != nil {
 			return nil, err
 		}
 		if refusal := slackApprovalRefusal(version, posted, reply.Timestamp); refusal != "" {
@@ -1797,6 +1804,9 @@ func statusWhileWaiting(attentionStage string) string {
 func slackApprovalRefusal(version int64, posted SlackReviewPost, replyTimestamp string) string {
 	if posted.Version != version {
 		return fmt.Sprintf("Draft %d isn't in this thread yet, so I didn't send anything. Reply `approve` after it is posted, or approve it in the editor.", version)
+	}
+	if !posted.Complete {
+		return fmt.Sprintf("Draft %d was too long to post here in full, so I didn't send anything. Read it whole and approve it in the editor.", version)
 	}
 	if posted.Timestamp != "" && !slackTimestampAfter(replyTimestamp, posted.Timestamp) {
 		return fmt.Sprintf("Draft %d was posted after your reply, so I didn't send anything. Review it above and reply `approve` again.", version)
@@ -2056,7 +2066,7 @@ func initializeBlogPost(ctx dex.Context, request SlackRequest) error {
 		func() error { return reviewHistory.Set(ctx, []ReviewEvent{}) },
 		func() error { return slackReviewEvents.Set(ctx, []string{}) },
 		func() error { return slackReviewPost.Set(ctx, SlackReviewPost{}) },
-		func() error { return pendingReviewPost.Set(ctx, 0) },
+		func() error { return pendingReviewPost.Set(ctx, SlackReviewPost{}) },
 	} {
 		if err := write(); err != nil {
 			return err
