@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,6 +48,7 @@ const (
 	stepWriteNewsletter       = "WriteNewsletter"
 	stepSendNewsletterEmail   = "SendNewsletterEmail"
 	stepPostSlackNotice       = "PostSlackNotice"
+	stepPostSlackReviewDraft  = "PostSlackReviewDraft"
 
 	maxDeliveryExceptions = 50
 	maxReviewHistory      = 50
@@ -171,6 +174,19 @@ type ReviewEvent struct {
 	Detail string    `json:"detail,omitempty"`
 }
 
+// SlackReviewPost is the latest draft version posted in full to the Slack thread, and when.
+// A Slack approve counts only for that version and only when sent after it was posted.
+type SlackReviewPost struct {
+	Version   int64  `json:"version"`
+	Timestamp string `json:"timestamp,omitempty"`
+}
+
+// DeliveryDraft is the newsletter version approval fixed for every recipient.
+type DeliveryDraft struct {
+	Newsletter content.NewsletterDraft `json:"newsletter"`
+	Slug       string                  `json:"slug"`
+}
+
 // DraftEditsSaved asks ApplyDraftEdits to publish one saved editor version.
 type DraftEditsSaved struct {
 	Version int64 `json:"version"`
@@ -228,6 +244,8 @@ var (
 	reviewHistory        = dex.DefineAttribute[[]ReviewEvent]("review-history")
 	slackReviewEvents    = dex.DefineAttribute[[]string]("slack-review-events")
 	editorURL            = dex.DefineAttribute[string]("editor-url")
+	slackReviewPost      = dex.DefineAttribute[SlackReviewPost]("slack-review-post")
+	deliveryDraft        = dex.DefineAttribute[DeliveryDraft]("delivery-draft")
 	reviewDecisions      = dex.DefineChannel[ReviewDecision]("review-decisions")
 	allBlogPostAttribute = []dex.AttributeDef{
 		blogStatus, blogTopic, blogRequester, blogRequest, changeWindow, windowLabel, blogTitle, attentionStage,
@@ -235,6 +253,7 @@ var (
 		researchCursor, repositoryResearch, researchSummary, blogDraft, blogPreview, blogHTML, blogArtifactPath,
 		newsletterDraft, newsletterSubject, newsletterPreview, deliveryRecipients, deliveryProgress, deliverySummary,
 		deliveryExceptions, slackNoticeStatus, draftVersion, reviewHistory, slackReviewEvents, editorURL,
+		slackReviewPost, deliveryDraft,
 	}
 )
 
@@ -437,6 +456,16 @@ func (flow *Flow) GetSteps() []dex.StepDef {
 			Uncertain: sdkgo.GoTo(RecordSlackNotice{}), Defect: sdkgo.GoTo(RecordSlackNotice{}),
 		})),
 		dex.DefineStep(RecordSlackNotice{}),
+		dex.DefineStep(slack.NewPostThreadReplyStep(slack.PostThreadReplyStepConfig[SlackNotice]{
+			StepType: stepPostSlackReviewDraft, ConnectionName: SlackConnectionName, Connection: flow.deps.Slack,
+			Annotations: sdkgo.StepAnnotations{GroupID: "slack", GroupLabel: "Slack", Explanation: "Post the full draft to the Slack thread for review."},
+			MapToOperationInput: func(notice SlackNotice) slack.PostThreadReplyInput {
+				return slack.PostThreadReplyInput{ChannelID: notice.ChannelID, ThreadTimestamp: notice.ThreadTimestamp, Text: notice.Text}
+			},
+			Sent: sdkgo.GoTo(RecordSlackReviewPost{}), ProviderRejected: sdkgo.GoTo(RecordSlackReviewPost{}),
+			Uncertain: sdkgo.GoTo(RecordSlackReviewPost{}), Defect: sdkgo.GoTo(RecordSlackReviewPost{}),
+		})),
+		dex.DefineStep(RecordSlackReviewPost{}),
 		dex.DefineStep(FinishBlogPost{flow: flow}),
 	}
 }
@@ -1033,7 +1062,7 @@ func (step EnterReview) Execute(ctx dex.Context, _ dex.None) (*dex.StepDecision,
 	heading := fmt.Sprintf("*Draft %d ready for review*: %s", version, content.SlackText(draft.Title))
 	message := content.SlackReviewMessage(heading, draft, newsletter, summary, link, step.flow.runLink(ctx))
 	return dex.GoToMany(
-		dex.MovementOf(sdkgo.StepRef[SlackNotice](stepPostSlackNotice), noticeFor(request, message)),
+		dex.MovementOf(sdkgo.StepRef[SlackNotice](stepPostSlackReviewDraft), noticeFor(request, message)),
 		dex.MovementOf(AwaitEditorDecision{}, nil),
 	), nil
 }
@@ -1048,6 +1077,14 @@ type ApplyDraftEdits struct {
 func (ApplyDraftEdits) GetStepType() string { return "ApplyDraftEdits" }
 
 func (step ApplyDraftEdits) Execute(ctx dex.Context, saved DraftEditsSaved) (*dex.StepDecision, error) {
+	current, err := draftVersion.Get(ctx)
+	if current, err = orDefault(current, err, 0); err != nil {
+		return nil, err
+	}
+	if saved.Version != current {
+		// A newer save or a model revision replaced this version; its own Step publishes it.
+		return dex.DeadEnd(), nil
+	}
 	draft, err := blogDraft.Get(ctx)
 	if err != nil {
 		return nil, err
@@ -1071,6 +1108,14 @@ func (step ApplyDraftEdits) Execute(ctx dex.Context, saved DraftEditsSaved) (*de
 	if err := blogArtifactPath.Set(ctx, path); err != nil {
 		return nil, err
 	}
+	status, err := blogStatus.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if status != StatusAwaitingReview {
+		// Approved right after saving: the artifact above is the approved version; there is no review to invite.
+		return dex.DeadEnd(), nil
+	}
 	request, err := blogRequest.Get(ctx)
 	if err != nil {
 		return nil, err
@@ -1090,7 +1135,7 @@ func (step ApplyDraftEdits) Execute(ctx dex.Context, saved DraftEditsSaved) (*de
 	// Post the whole edited draft, so a Slack approval approves text the reviewers can read.
 	heading := fmt.Sprintf("*Draft %d, edited in the editor*: %s", saved.Version, content.SlackText(draft.Title))
 	message := content.SlackReviewMessage(heading, draft, newsletter, summary, link, step.flow.runLink(ctx))
-	return dex.GoTo(sdkgo.StepRef[SlackNotice](stepPostSlackNotice), noticeFor(request, message)), nil
+	return dex.GoTo(sdkgo.StepRef[SlackNotice](stepPostSlackReviewDraft), noticeFor(request, message)), nil
 }
 
 // dex:group group-id:review group-label:"Review"
@@ -1159,11 +1204,7 @@ func (step AwaitEditorDecision) Execute(ctx dex.Context, _ dex.None) (*dex.StepD
 	if len(decisions) != 1 || decisions[0].Round != round {
 		// A decision from an earlier round raced a save or another Action; Dex Web runs Actions
 		// without their locks, so it may have moved the status. Put it back and keep waiting.
-		waiting := StatusAwaitingReview
-		if stage != "" {
-			waiting = StatusNeedsAttention
-		}
-		if err := blogStatus.Set(ctx, waiting); err != nil {
+		if err := blogStatus.Set(ctx, statusWhileWaiting(stage)); err != nil {
 			return nil, err
 		}
 		return dex.GoTo(AwaitEditorDecision{}, nil), nil
@@ -1278,6 +1319,18 @@ func (step StartNewsletterDelivery) Execute(ctx dex.Context, _ dex.None) (*dex.S
 	if err := blogStatus.Set(ctx, StatusDelivering); err != nil {
 		return nil, err
 	}
+	newsletter, err := newsletterDraft.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	blog, err := blogDraft.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Every recipient gets this approved version, even if the draft Attributes change later.
+	if err := deliveryDraft.Set(ctx, DeliveryDraft{Newsletter: newsletter, Slug: blog.Slug}); err != nil {
+		return nil, err
+	}
 	if len(recipients) == 0 {
 		request, err := blogRequest.Get(ctx)
 		if err != nil {
@@ -1379,6 +1432,42 @@ func (RecordSlackNotice) Execute(ctx dex.Context, result slack.PostThreadReplyRe
 		status = "Last Slack reply not posted: " + failureText(result.Branch, result.Failure)
 	}
 	if err := slackNoticeStatus.Set(ctx, status); err != nil {
+		return nil, err
+	}
+	return dex.DeadEnd(), nil
+}
+
+// dex:group group-id:slack group-label:"Slack"
+// dex:explanation text:"Record which draft version reached the Slack thread and when, so a Slack approve counts only for a draft reviewers could read."
+type RecordSlackReviewPost struct {
+	dex.StepDefaultsNoWaitFor[slack.PostThreadReplyResult]
+}
+
+func (RecordSlackReviewPost) GetStepType() string { return "RecordSlackReviewPost" }
+
+func (RecordSlackReviewPost) GetStepOptions() *dex.StepOptions {
+	return &dex.StepOptions{ExecuteLockAttributes: []dex.AttributeLock{dex.LockAttribute(slackNoticeStatus), dex.LockAttribute(slackReviewPost)}}
+}
+
+func (RecordSlackReviewPost) Execute(ctx dex.Context, result slack.PostThreadReplyResult) (*dex.StepDecision, error) {
+	if result.Branch != slack.PostThreadReplyBranchSent {
+		// Without a posted draft, Slack approval stays closed; the editor and Dex Web still approve.
+		if err := slackNoticeStatus.Set(ctx, "Draft not posted to Slack: "+failureText(result.Branch, result.Failure)); err != nil {
+			return nil, err
+		}
+		return dex.DeadEnd(), nil
+	}
+	posted, err := slackReviewPost.Get(ctx)
+	if posted, err = orDefault(posted, err, SlackReviewPost{}); err != nil {
+		return nil, err
+	}
+	version := postedDraftVersion(result.Value.Message.Text)
+	if version >= posted.Version {
+		if err := slackReviewPost.Set(ctx, SlackReviewPost{Version: version, Timestamp: result.Value.Message.Timestamp}); err != nil {
+			return nil, err
+		}
+	}
+	if err := slackNoticeStatus.Set(ctx, fmt.Sprintf("Draft %d posted to Slack", version)); err != nil {
 		return nil, err
 	}
 	return dex.DeadEnd(), nil
@@ -1727,8 +1816,21 @@ func (flow *Flow) ReceiveSlackReview(ctx dex.Context, reply SlackReviewReply) (*
 	next, outcome, acknowledgement := "", OutcomeIgnored, ""
 	switch {
 	case status == StatusAwaitingReview && command == ReviewApprove:
+		version, err := draftVersion.Get(ctx)
+		if version, err = orDefault(version, err, 0); err != nil {
+			return nil, err
+		}
+		posted, err := slackReviewPost.Get(ctx)
+		// A run started before posts were recorded has no record; its approvals work as before.
+		if posted, err = orDefault(posted, err, SlackReviewPost{Version: version}); err != nil {
+			return nil, err
+		}
+		if refusal := slackApprovalRefusal(version, posted, reply.Timestamp); refusal != "" {
+			acknowledgement = refusal
+			break
+		}
 		decision, next, outcome = &ReviewDecision{Kind: decisionApprove, Round: round}, StatusDelivering, OutcomeApproved
-		acknowledgement = "Approved by " + reviewer + ". Sending the newsletter."
+		acknowledgement = fmt.Sprintf("Draft %d approved by %s. Sending the newsletter.", version, reviewer)
 	case (status == StatusAwaitingReview || status == StatusNeedsAttention) && command == ReviewReject:
 		decision, next, outcome = &ReviewDecision{Kind: decisionReject, Round: round, Notes: "Rejected in Slack by " + reviewer + "."}, StatusRejected, OutcomeRejected
 	case status == StatusAwaitingReview && feedback != "":
@@ -1767,6 +1869,58 @@ func (flow *Flow) ReceiveSlackReview(ctx dex.Context, reply SlackReviewReply) (*
 		result.NextSteps = []dex.StepMovement{dex.MovementOf(sdkgo.StepRef[SlackNotice](stepPostSlackNotice), noticeFor(request, acknowledgement))}
 	}
 	return result, nil
+}
+
+// statusWhileWaiting is the status a run waiting for a review decision should show.
+func statusWhileWaiting(attentionStage string) string {
+	if attentionStage != "" {
+		return StatusNeedsAttention
+	}
+	return StatusAwaitingReview
+}
+
+var postedDraftHeading = regexp.MustCompile(`^\*Draft (\d+)[ ,]`)
+
+// postedDraftVersion reads the draft version from a review post's first line.
+func postedDraftVersion(text string) int64 {
+	match := postedDraftHeading.FindStringSubmatch(text)
+	if match == nil {
+		return 0
+	}
+	version, _ := strconv.ParseInt(match[1], 10, 64)
+	return version
+}
+
+// slackApprovalRefusal explains why a Slack approve cannot count, or returns "" when it can: the
+// current version must be in the thread, and the reply must come after it was posted.
+func slackApprovalRefusal(version int64, posted SlackReviewPost, replyTimestamp string) string {
+	if posted.Version != version {
+		return fmt.Sprintf("Draft %d isn't in this thread yet, so I didn't send anything. Reply `approve` after it is posted, or approve it in the editor.", version)
+	}
+	if posted.Timestamp != "" && !slackTimestampAfter(replyTimestamp, posted.Timestamp) {
+		return fmt.Sprintf("Draft %d was posted after your reply, so I didn't send anything. Review it above and reply `approve` again.", version)
+	}
+	return ""
+}
+
+// slackTimestampAfter compares Slack message timestamps such as 1790648252.915979.
+func slackTimestampAfter(later, earlier string) bool {
+	parse := func(timestamp string) (int64, int64, bool) {
+		seconds, fraction, _ := strings.Cut(strings.TrimSpace(timestamp), ".")
+		whole, err := strconv.ParseInt(seconds, 10, 64)
+		if err != nil {
+			return 0, 0, false
+		}
+		fraction = (fraction + "000000")[:6]
+		part, err := strconv.ParseInt(fraction, 10, 64)
+		return whole, part, err == nil
+	}
+	laterSeconds, laterFraction, laterOK := parse(later)
+	earlierSeconds, earlierFraction, earlierOK := parse(earlier)
+	if !laterOK || !earlierOK {
+		return false
+	}
+	return laterSeconds > earlierSeconds || (laterSeconds == earlierSeconds && laterFraction > earlierFraction)
 }
 
 // notInReviewMessage says why a draft cannot change now, and whether it will be back.
@@ -1897,6 +2051,7 @@ func (*Flow) GetDexSummary(ctx dex.Context, _ dex.None) (*dex.RPCResult[map[stri
 // dex:field attribute-key:editor-url value-type:string editable:false description:"Editor (edit and approve before sending)"
 // dex:field attribute-key:draft-version value-type:int64 editable:false description:"Draft version"
 // dex:field attribute-key:review-history value-type:array editable:false description:"Review history"
+// dex:field attribute-key:slack-review-post value-type:json editable:false description:"Draft in the Slack thread (Slack approvals count for this version)"
 func (flow *Flow) GetDexDisplay(ctx dex.Context, _ dex.None) (*dex.RPCResult[map[string]any], error) {
 	title, err := blogTitle.Get(ctx)
 	if err != nil {
@@ -1974,7 +2129,12 @@ func (flow *Flow) GetDexDisplay(ctx dex.Context, _ dex.None) (*dex.RPCResult[map
 	if history, err = orDefault(history, err, []ReviewEvent{}); err != nil {
 		return nil, err
 	}
+	posted, err := slackReviewPost.Get(ctx)
+	if posted, err = orDefault(posted, err, SlackReviewPost{}); err != nil {
+		return nil, err
+	}
 	return &dex.RPCResult[map[string]any]{Output: map[string]any{
+		"slack-review-post":     posted,
 		"editor-url":            editor,
 		"draft-version":         version,
 		"review-history":        history,
@@ -2029,6 +2189,7 @@ func initializeBlogPost(ctx dex.Context, request SlackRequest) error {
 		func() error { return draftVersion.Set(ctx, 0) },
 		func() error { return reviewHistory.Set(ctx, []ReviewEvent{}) },
 		func() error { return slackReviewEvents.Set(ctx, []string{}) },
+		func() error { return slackReviewPost.Set(ctx, SlackReviewPost{}) },
 	} {
 		if err := write(); err != nil {
 			return err
@@ -2076,7 +2237,7 @@ func (flow *Flow) renderPreview(ctx dex.Context, blog content.BlogDraft, newslet
 	return blogPage, email, err
 }
 
-// nextEmail renders the email for the subscriber at the delivery cursor.
+// nextEmail renders the email for the subscriber at the delivery cursor from the approved version.
 func (flow *Flow) nextEmail(ctx dex.Context) (OutgoingEmail, error) {
 	progress, err := deliveryProgress.Get(ctx)
 	if err != nil {
@@ -2086,21 +2247,28 @@ func (flow *Flow) nextEmail(ctx dex.Context) (OutgoingEmail, error) {
 	if err != nil {
 		return OutgoingEmail{}, err
 	}
-	draft, err := newsletterDraft.Get(ctx)
-	if err != nil {
-		return OutgoingEmail{}, err
-	}
-	blog, err := blogDraft.Get(ctx)
-	if err != nil {
+	approved, err := deliveryDraft.Get(ctx)
+	var missing *dex.AttributeNotFoundError
+	if errors.As(err, &missing) {
+		// A delivery that began before the snapshot existed reads the current draft.
+		if approved.Newsletter, err = newsletterDraft.Get(ctx); err != nil {
+			return OutgoingEmail{}, err
+		}
+		blog, blogErr := blogDraft.Get(ctx)
+		if blogErr != nil {
+			return OutgoingEmail{}, blogErr
+		}
+		approved.Slug = blog.Slug
+	} else if err != nil {
 		return OutgoingEmail{}, err
 	}
 	address := recipients[progress.Next]
-	email := flow.newsletterEmail(draft, blog.Slug, address)
+	email := flow.newsletterEmail(approved.Newsletter, approved.Slug, address)
 	html, err := content.RenderNewsletterHTML(email)
 	if err != nil {
 		return OutgoingEmail{}, err
 	}
-	return OutgoingEmail{Address: address, Subject: draft.Subject, Text: content.RenderNewsletterText(email), HTML: html}, nil
+	return OutgoingEmail{Address: address, Subject: approved.Newsletter.Subject, Text: content.RenderNewsletterText(email), HTML: html}, nil
 }
 
 func (flow *Flow) newsletterEmail(draft content.NewsletterDraft, slug, address string) content.NewsletterEmail {

@@ -300,8 +300,8 @@ func TestSlackReviewMessageCutsLongDrafts(t *testing.T) {
 	newsletterText := strings.Repeat("ü", 40000)
 	editorURL := "https://news.example.com/edit/run?token=ab"
 	message := SlackReviewMessage("*Draft 1 ready for review*: Long", blog, newsletterText, "summary", editorURL, "https://dex.example.com/v2/runs/run")
-	if !strings.Contains(message, "\n… (cut to fit Slack; the editor has the full draft)") {
-		t.Fatal("a long draft was not marked as cut")
+	if !strings.Contains(message, "\n… (cut to fit Slack; the editor has the full email)") {
+		t.Fatal("an oversized email was not marked as cut")
 	}
 	if !utf8.ValidString(message) {
 		t.Fatal("the cut split a character")
@@ -315,5 +315,35 @@ func TestSlackReviewMessageCutsLongDrafts(t *testing.T) {
 	}
 	if strings.Count(message, "ü") >= 40000 {
 		t.Fatal("the whole newsletter was posted")
+	}
+}
+
+func TestSlackReviewMessageKeepsTheWholeEmailWhenThePostIsLong(t *testing.T) {
+	blog := BlogDraft{Title: "Long"}
+	for len(blog.Sections) < 8 {
+		blog.Sections = append(blog.Sections, BlogSection{Heading: "H", Paragraphs: []string{strings.Repeat("p", 2000), strings.Repeat("q", 2000)}})
+	}
+	email := "Subject line\n\nIntro that subscribers will receive.\n* Item\n  Summary\n\nUnsubscribe: https://news.example.com/unsubscribe"
+	message := SlackReviewMessage("*Draft 1 ready for review*: Long", blog, email, "summary", "https://news.example.com/e", "https://dex.example.com/r")
+	if !strings.Contains(message, "*Newsletter email*\n"+email) {
+		t.Fatal("the email was cut from a long review post")
+	}
+	if !strings.Contains(message, "(cut to fit Slack; the editor has the full post)") || utf8.RuneCountInString(message) > maxSlackDraftRunes+1000 {
+		t.Fatal("the long blog text was not cut to the budget")
+	}
+}
+
+func TestValidateEditedDraftAcceptsLegacyEllipsisFields(t *testing.T) {
+	legacy := strings.Repeat("t", 160) + "…"
+	original := BlogDraft{Title: legacy, Slug: "s", Sections: []BlogSection{{Heading: "H", Paragraphs: []string{"P"}}}}
+	if _, err := ValidateEditedBlog(original, original); err != nil {
+		t.Fatalf("an unedited legacy title (limit+1 ending in …) was rejected: %v", err)
+	}
+	original.Title = strings.Repeat("t", 161) + "…"
+	if _, err := ValidateEditedBlog(original, original); err == nil {
+		t.Fatal("a title two characters over the limit was accepted")
+	}
+	if _, err := ValidateEditedNewsletter(NewsletterDraft{Subject: strings.Repeat("s", 120) + "…"}); err != nil {
+		t.Fatalf("a legacy subject was rejected: %v", err)
 	}
 }

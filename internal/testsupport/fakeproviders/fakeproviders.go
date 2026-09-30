@@ -116,8 +116,12 @@ func (fake *Providers) serveSlack(response http.ResponseWriter, request *http.Re
 	fake.slackPosts = append(fake.slackPosts, fmt.Sprint(payload["text"]))
 	count := len(fake.slackPosts)
 	fake.mutex.Unlock()
-	writeJSON(response, map[string]any{"ok": true, "channel": payload["channel"], "ts": fmt.Sprintf("9.%d", count),
-		"message": map[string]any{"ts": fmt.Sprintf("9.%d", count), "thread_ts": payload["thread_ts"], "user": "UBOT", "text": payload["text"]}})
+	// Slack timestamps are the post time in seconds with microseconds, which review approvals compare.
+	now := time.Now()
+	timestamp := fmt.Sprintf("%d.%06d", now.Unix(), now.Nanosecond()/1000)
+	_ = count
+	writeJSON(response, map[string]any{"ok": true, "channel": payload["channel"], "ts": timestamp,
+		"message": map[string]any{"ts": timestamp, "thread_ts": payload["thread_ts"], "user": "UBOT", "text": payload["text"]}})
 }
 
 func (fake *Providers) serveGitHub(response http.ResponseWriter, request *http.Request, path string) {

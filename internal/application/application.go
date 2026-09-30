@@ -83,12 +83,16 @@ func New(options Options) (*Application, error) {
 	if err != nil {
 		return nil, err
 	}
-	key, err := subscribers.LoadSigningKey(options.Config.Newsletter.UnsubscribeKeyFile)
+	unsubscribeKey, err := subscribers.LoadSigningKey(options.Config.Newsletter.UnsubscribeKeyFile)
 	if err != nil {
 		return nil, err
 	}
-	links := subscribers.NewUnsubscribeLinks(options.Config.Newsletter.PublicBaseURL, key)
-	editorLinks := blogpost.NewEditorLinks(options.Config.Newsletter.PublicBaseURL, key)
+	editorKey, err := subscribers.LoadSigningKey(options.Config.Newsletter.EditorKeyFile)
+	if err != nil {
+		return nil, err
+	}
+	links := subscribers.NewUnsubscribeLinks(options.Config.Newsletter.PublicBaseURL, unsubscribeKey)
+	editorLinks := blogpost.NewEditorLinks(options.Config.Newsletter.PublicBaseURL, editorKey)
 	directory := &subscriberDirectory{}
 	blogPosts := blogpost.NewFlow(blogpost.Dependencies{
 		Slack: slackConnection, GitHub: githubConnection, LLM: llmConnection, Gmail: gmailConnection,
@@ -147,6 +151,11 @@ func newSlackTrigger(store *localconfig.Store, client *dex.Client, flow *blogpos
 	reviewFilter, err := blogpost.NewReviewTriggerFilter(reviewConfiguration)
 	if err != nil {
 		return nil, fmt.Errorf("Trigger binding %q: %w", blogpost.ReviewTriggerBinding, err)
+	}
+	if reviewConfiguration.ChannelID != requestConfiguration.ChannelID {
+		// Draft threads live in the request channel, so replies anywhere else never reach a run.
+		return nil, fmt.Errorf("Trigger binding %q must use the same channel as %q; pick the blog request channel for both in Dex Web Connections, then restart",
+			blogpost.ReviewTriggerBinding, blogpost.RequestTriggerBinding)
 	}
 	bindingLogger := func(trigger, binding string) *slog.Logger {
 		return logger.With("connector", slack.ConnectorID, "connection", blogpost.SlackConnectionName, "trigger", trigger, "binding", binding)

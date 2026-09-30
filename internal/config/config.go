@@ -58,6 +58,9 @@ type Newsletter struct {
 	PublicBaseURL string `json:"publicBaseUrl"`
 	// UnsubscribeKeyFile holds the HMAC key that signs unsubscribe links.
 	UnsubscribeKeyFile string `json:"unsubscribeKeyFile"`
+	// EditorKeyFile holds the separate HMAC key that signs editor links; replacing it revokes
+	// every editor link without breaking unsubscribe links in emails already sent.
+	EditorKeyFile string `json:"editorKeyFile"`
 }
 
 // Load reads EnvironmentVariable, or DefaultPath, and applies defaults.
@@ -102,6 +105,9 @@ func (configuration *Config) applyDefaults() {
 	}
 	if configuration.Newsletter.UnsubscribeKeyFile == "" {
 		configuration.Newsletter.UnsubscribeKeyFile = ".dex-dev/unsubscribe.key"
+	}
+	if configuration.Newsletter.EditorKeyFile == "" {
+		configuration.Newsletter.EditorKeyFile = ".dex-dev/editor.key"
 	}
 	owners := make([]string, 0, len(configuration.GitHub.Owners))
 	for _, owner := range configuration.GitHub.Owners {

@@ -100,8 +100,9 @@ func TestSlackThreadReviewLoop(t *testing.T) {
 	}
 
 	// Approve with any case and punctuation sends the revised newsletter.
+	h.waitForPostedDraft(ctx, flowID, 2)
 	h.deliverSlackReply(ctx, slackReply(thread, "UREVIEWER", "Approve."))
-	h.waitForSlackPost(ctx, "Approved by <@UREVIEWER>. Sending the newsletter.")
+	h.waitForSlackPost(ctx, "approved by <@UREVIEWER>. Sending the newsletter.")
 	result := h.result(ctx, flowID)
 	if result.Status != blogpost.StatusSent || result.Title != "Connectors, revised" || result.Delivery.Total == 0 || result.Delivery.Sent != result.Delivery.Total {
 		t.Fatalf("result = %+v", result)
@@ -113,7 +114,7 @@ func TestSlackThreadReviewLoop(t *testing.T) {
 	h.waitForSlackPost(ctx, "Newsletter sent: ")
 
 	slackPosts, _, _ := h.fake.Snapshot()
-	for fragment, want := range map[string]int{"Thanks <@UREVIEWER>": 1, "Approved by": 1, "I'm not waiting for a review": 1, "UOUTSIDER": 0, "ready for review*": 2} {
+	for fragment, want := range map[string]int{"Thanks <@UREVIEWER>": 1, "approved by <@UREVIEWER>": 1, "I'm not waiting for a review": 1, "UOUTSIDER": 0, "ready for review*": 2} {
 		if got := countContaining(slackPosts, fragment); got != want {
 			t.Fatalf("%d Slack posts contain %q, want %d:\n%s", got, fragment, want, strings.Join(slackPosts, "\n---\n"))
 		}
@@ -160,7 +161,7 @@ func TestSlackRejectAndApprovalWithConditions(t *testing.T) {
 	}
 	h.waitForSlackPost(ctx, "An editor rejected the draft. Rejected in Slack by <@UREVIEWER>.")
 	slackPosts, emails, _ := h.fake.Snapshot()
-	if len(emails) != 0 || countContaining(slackPosts, "Approved by") != 0 {
+	if len(emails) != 0 || countContaining(slackPosts, "approved by <@") != 0 {
 		t.Fatalf("a rejected run sent %d emails; Slack posts:\n%s", len(emails), strings.Join(slackPosts, "\n---\n"))
 	}
 	history := reviewEvents(t, h.display(ctx, flowID))
@@ -205,7 +206,7 @@ func TestSlackReviewWhileNeedsAttention(t *testing.T) {
 	if result := h.result(ctx, flowID); result.Status != blogpost.StatusRejected || !strings.Contains(result.Message, "Rejected in Slack by <@UREVIEWER>.") {
 		t.Fatalf("result = %+v", result)
 	}
-	if slackPosts, _, _ := h.fake.Snapshot(); countContaining(slackPosts, "Approved by") != 0 {
+	if slackPosts, _, _ := h.fake.Snapshot(); countContaining(slackPosts, "approved by <@") != 0 {
 		t.Fatalf("an approval was acknowledged while stuck:\n%s", strings.Join(slackPosts, "\n---\n"))
 	}
 }
@@ -382,9 +383,10 @@ func TestSlackApprovalSendsEditorVersion(t *testing.T) {
 		t.Fatalf("save = %+v, %v", saved, err)
 	}
 	h.waitForSlackPost(ctx, "*Draft 2, edited in the editor*: Connectors, tightened in the editor")
+	h.waitForPostedDraft(ctx, flowID, 2)
 
 	h.deliverSlackReply(ctx, slackReply(thread, "UREVIEWER", "approved"))
-	h.waitForSlackPost(ctx, "Approved by <@UREVIEWER>. Sending the newsletter.")
+	h.waitForSlackPost(ctx, "approved by <@UREVIEWER>. Sending the newsletter.")
 	result := h.result(ctx, flowID)
 	if result.Status != blogpost.StatusSent || result.Title != "Connectors, tightened in the editor" || result.Delivery.Sent != result.Delivery.Total {
 		t.Fatalf("result = %+v", result)
@@ -487,8 +489,9 @@ func (h *harness) startSlackThread(ctx context.Context, text string) (flowID, th
 // slackReply is one reply in the request's thread.
 func slackReply(thread, userID, text string) sdkgo.TriggerEvent[slack.MessageEvent] {
 	sequence := replySequence.Add(1)
-	return sdkgo.TriggerEvent[slack.MessageEvent]{ID: fmt.Sprintf("EvReply%d-%d", time.Now().UnixNano(), sequence), OccurredAt: time.Now().UTC(), Payload: slack.MessageEvent{
-		TeamID: "T1", ChannelID: "CBLOG", Timestamp: fmt.Sprintf("%d.%06d", time.Now().Unix(), sequence), ThreadTimestamp: thread, UserID: userID, Text: text,
+	now := time.Now()
+	return sdkgo.TriggerEvent[slack.MessageEvent]{ID: fmt.Sprintf("EvReply%d-%d", now.UnixNano(), sequence), OccurredAt: now.UTC(), Payload: slack.MessageEvent{
+		TeamID: "T1", ChannelID: "CBLOG", Timestamp: fmt.Sprintf("%d.%06d", now.Unix(), now.Nanosecond()/1000), ThreadTimestamp: thread, UserID: userID, Text: text,
 	}}
 }
 
@@ -558,6 +561,16 @@ func (h *harness) waitForDisplay(ctx context.Context, flowID, what string, done 
 	return nil
 }
 
+// waitForPostedDraft waits until the run records version as the draft in the Slack thread,
+// which a Slack approve needs; a person cannot reply in the milliseconds before it is recorded.
+func (h *harness) waitForPostedDraft(ctx context.Context, flowID string, version int64) {
+	h.t.Helper()
+	h.waitForDisplay(ctx, flowID, fmt.Sprintf("draft %d posted to Slack", version), func(view map[string]any) bool {
+		posted, ok := view["slack-review-post"].(map[string]any)
+		return ok && posted["version"] == float64(version)
+	})
+}
+
 // editorToken reads the token from the editor link Dex Web shows for the run.
 func (h *harness) editorToken(ctx context.Context, flowID string) string {
 	h.t.Helper()
@@ -572,7 +585,7 @@ func (h *harness) editorToken(ctx context.Context, flowID string) string {
 // editorLinks signs editor links with the harness's key, as the application does.
 func (h *harness) editorLinks() blogpost.EditorLinks {
 	h.t.Helper()
-	key, err := subscribers.LoadSigningKey(h.options.Config.Newsletter.UnsubscribeKeyFile)
+	key, err := subscribers.LoadSigningKey(h.options.Config.Newsletter.EditorKeyFile)
 	if err != nil {
 		h.t.Fatal(err)
 	}

@@ -1,12 +1,14 @@
 package blogpost
 
 import (
+	"errors"
 	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/superdurable/dex-connectors-library/connectors/slack"
 	"github.com/superdurable/dex-connectors-library/sdkgo"
+	"github.com/superdurable/dex/sdk-go/dex"
 )
 
 func TestParseReviewReply(t *testing.T) {
@@ -169,5 +171,68 @@ func TestEditorLinks(t *testing.T) {
 	}
 	if parsed, err := url.Parse(escaped); err != nil || parsed.Query().Get("token") != links.Token(oddRunID) || parsed.Fragment != "" {
 		t.Fatalf("escaped URL parsed as %+v, %v", parsed, err)
+	}
+}
+
+func TestSlackApprovalGuards(t *testing.T) {
+	for _, testCase := range []struct {
+		later, earlier string
+		want           bool
+	}{
+		{"1790648253.000001", "1790648252.999999", true},
+		{"1790648252.5", "1790648252.400000", true},
+		{"1790648252.400000", "1790648252.4", false},
+		{"1790648251.999999", "1790648252.000000", false},
+		{"garbage", "1790648252.0", false},
+		{"1790648252.0", "", false},
+	} {
+		if got := slackTimestampAfter(testCase.later, testCase.earlier); got != testCase.want {
+			t.Errorf("slackTimestampAfter(%q, %q) = %v", testCase.later, testCase.earlier, got)
+		}
+	}
+	for text, want := range map[string]int64{
+		"*Draft 3 ready for review*: Title":   3,
+		"*Draft 12, edited in the editor*: T": 12,
+		"Draft 3 approved by <@U1>.":          0,
+		"Thanks, revising":                    0,
+	} {
+		if got := postedDraftVersion(text); got != want {
+			t.Errorf("postedDraftVersion(%q) = %d, want %d", text, got, want)
+		}
+	}
+	posted := SlackReviewPost{Version: 2, Timestamp: "1790648252.000100"}
+	if refusal := slackApprovalRefusal(2, posted, "1790648252.000200"); refusal != "" {
+		t.Fatalf("a reply after the current post was refused: %s", refusal)
+	}
+	if refusal := slackApprovalRefusal(2, posted, "1790648252.000050"); !strings.Contains(refusal, "posted after your reply") {
+		t.Fatalf("a reply before the post = %q", refusal)
+	}
+	if refusal := slackApprovalRefusal(3, posted, "1790648299.000000"); !strings.Contains(refusal, "Draft 3 isn't in this thread yet") {
+		t.Fatalf("an unposted version = %q", refusal)
+	}
+	if refusal := slackApprovalRefusal(2, SlackReviewPost{Version: 2}, "1"); refusal != "" {
+		t.Fatalf("a run started before post timestamps were recorded was refused: %s", refusal)
+	}
+}
+
+func TestWaitingStatusAndDefaults(t *testing.T) {
+	if statusWhileWaiting("") != StatusAwaitingReview || statusWhileWaiting(StageDeliver) != StatusNeedsAttention {
+		t.Fatal("statusWhileWaiting")
+	}
+	if value, err := orDefault(int64(0), &dex.AttributeNotFoundError{}, 7); err != nil || value != 7 {
+		t.Fatalf("missing Attribute = %d, %v", value, err)
+	}
+	if value, err := orDefault(int64(3), nil, 7); err != nil || value != 3 {
+		t.Fatalf("present Attribute = %d, %v", value, err)
+	}
+	if _, err := orDefault(int64(0), errors.New("boom"), 7); err == nil {
+		t.Fatal("orDefault hid a real error")
+	}
+	for status, want := range map[string]string{
+		StatusDelivering: "being sent", StatusSent: "editing is closed", StatusWriting: "Reload when", StatusNeedsAttention: "needs attention",
+	} {
+		if got := notInReviewMessage(status); !strings.Contains(got, want) {
+			t.Errorf("notInReviewMessage(%s) = %q", status, got)
+		}
 	}
 }
