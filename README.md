@@ -10,12 +10,14 @@ newsletter.
    the largest pull requests' changed files, and their commits in the window.
 4. The model writes a structured blog post. The application renders it into a
    self-contained HTML artifact, keeping only links found in the research.
-5. The model writes a newsletter email based on the post.
+5. The newsletter email is the same post in email formatting: its subject is
+   the post title and its body is the whole post. There is one document to
+   review, revise, and edit.
 6. The full draft is posted to the request's Slack thread for review. Reviewers
    reply `approve` to send it, `reject` to stop, or any feedback, which the
    model uses to write a revised draft that is posted back for the next round.
-   Anyone can also polish the text in the pre-publish editor, which previews the
-   post and email exactly as they will ship, and approve from there. Dex Web's
+   Anyone can also polish the text in the pre-publish editor: one form, with
+   previews of the post as published and as emailed, and approve from there. Dex Web's
    Approve, Revise, Retry, and Reject Actions keep working.
 7. On approval, the newsletter goes to every subscriber through Gmail, one
    email per reader, each with a signed unsubscribe link. The requester's Slack
@@ -47,8 +49,8 @@ Connectors (all released):
 
 ### Swapping the model provider
 
-The four generation Steps (`InterpretBlogRequest`, `ChooseRepositories`,
-`WriteBlogPost`, `WriteNewsletter`) use the unified `llm` connector. The
+The three generation Steps (`InterpretBlogRequest`, `ChooseRepositories`,
+`WriteBlogPost`) use the unified `llm` connector. The
 connection's default model starts as `gemini/<model>`. To switch providers, add
 that provider's key to the `llm` connection and change its model, or pick a
 model per Step with the Step's model picker in Dex Web, such as
@@ -152,7 +154,7 @@ emails, unsubscribe links, and the Dex Web removal Action.
   explanation and nothing is sent.
 - The Slack reviewer list, like models and other connection settings, is read at
   startup: restart the application after changing reviewers.
-- Slack feedback after manual edits asks the model to revise the edited blog and
-  email, so the model may rephrase manual edits while applying the feedback.
+- Slack feedback after manual edits asks the model to revise the edited post, so
+  the model may rephrase manual edits while applying the feedback.
 - The post is an HTML artifact; publishing it to a website is up to you
   (`blog.postUrlTemplate` links the newsletter to it).

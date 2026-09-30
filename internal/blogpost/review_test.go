@@ -3,9 +3,14 @@ package blogpost
 import (
 	"errors"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/superdurable-apps/dex-newsletter/internal/config"
+	"github.com/superdurable-apps/dex-newsletter/internal/content"
+	"github.com/superdurable-apps/dex-newsletter/internal/subscribers"
 	"github.com/superdurable/dex-connectors-library/connectors/slack"
 	"github.com/superdurable/dex-connectors-library/sdkgo"
 	"github.com/superdurable/dex/sdk-go/dex"
@@ -224,5 +229,45 @@ func TestWaitingStatusAndDefaults(t *testing.T) {
 		if got := notInReviewMessage(status); !strings.Contains(got, want) {
 			t.Errorf("notInReviewMessage(%s) = %q", status, got)
 		}
+	}
+}
+
+func TestEmailIsTheApprovedPost(t *testing.T) {
+	unsubscribe := subscribers.NewUnsubscribeLinks("https://example.com/", []byte("unsubscribe key of sixteen+ bytes"))
+	flow := NewFlow(Dependencies{
+		Config:      config.Config{Blog: config.Blog{PublicationName: "Acme Notes", PostURLTemplate: "https://example.com/blog/{slug}/"}},
+		Unsubscribe: unsubscribe,
+	})
+	draft := content.BlogDraft{
+		Title: "Connectors ship", Subtitle: "Retries and more", Slug: "connectors/ship", Summary: "s",
+		Sections: []content.BlogSection{{Heading: "What changed", Paragraphs: []string{"p"}}},
+	}
+	window := content.NewWindow(time.Date(2026, 9, 14, 0, 0, 0, 0, time.UTC), time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC))
+	want := content.Email{
+		Draft: draft, PublicationName: "Acme Notes", Window: window,
+		PostURL: "https://example.com/blog/connectors%2Fship/", UnsubscribeURL: unsubscribe.URL("reader@example.com"),
+	}
+	if email := flow.email(draft, window, "reader@example.com"); !reflect.DeepEqual(email, want) {
+		t.Fatalf("email = %+v\nwant  %+v", email, want)
+	}
+	if other := flow.email(draft, window, "other@example.com"); other.UnsubscribeURL == want.UnsubscribeURL || !reflect.DeepEqual(other.Draft, draft) {
+		t.Fatalf("a second recipient's copy = %+v", other)
+	}
+
+	unslugged := draft
+	unslugged.Slug = ""
+	if email := flow.email(unslugged, window, "reader@example.com"); email.PostURL != "" {
+		t.Fatalf("a post without a slug links to %q", email.PostURL)
+	}
+	flow.deps.Config.Blog.PostURLTemplate = ""
+	if email := flow.email(draft, window, "reader@example.com"); email.PostURL != "" {
+		t.Fatalf("a blog without a post URL template links to %q", email.PostURL)
+	}
+}
+
+func TestModelStepTypesAreTheBlogWritingSteps(t *testing.T) {
+	// The email is the approved post, so no model writes a separate newsletter.
+	if want := []string{"InterpretBlogRequest", "ChooseRepositories", "WriteBlogPost"}; !reflect.DeepEqual(ModelStepTypes, want) {
+		t.Fatalf("ModelStepTypes = %q, want %q", ModelStepTypes, want)
 	}
 }

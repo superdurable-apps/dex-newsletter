@@ -186,60 +186,6 @@ func TestValidateEditedBlogReportsEveryProblem(t *testing.T) {
 	}
 }
 
-func TestValidateEditedNewsletter(t *testing.T) {
-	draft, err := ValidateEditedNewsletter(NewsletterDraft{
-		Subject: "  This \n week ", Preheader: " In\tshort ", Intro: "\n Hello.\n\nMore. ", Closing: " Bye. ",
-		Items: []NewsletterItem{{Title: " ", Summary: "\n"}, {Title: " Faster \n builds ", Summary: " Less \t waiting. "}, {Title: "Title only"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := NewsletterDraft{
-		Subject: "This week", Preheader: "In short", Intro: "Hello.\n\nMore.", Closing: "Bye.",
-		Items: []NewsletterItem{{Title: "Faster builds", Summary: "Less waiting."}, {Title: "Title only"}},
-	}
-	if !reflect.DeepEqual(draft, want) {
-		t.Fatalf("draft = %+v\nwant  %+v", draft, want)
-	}
-
-	items := func(count int) []NewsletterItem {
-		kept := make([]NewsletterItem, count)
-		for index := range kept {
-			kept[index] = NewsletterItem{Title: "t"}
-		}
-		return kept
-	}
-	cases := []struct {
-		name  string
-		draft NewsletterDraft
-		want  string
-	}{
-		{"subject required", NewsletterDraft{Subject: " \n "}, "Subject is required"},
-		{"subject", NewsletterDraft{Subject: strings.Repeat("é", 121)}, "Subject has 121 characters; keep it to 120"},
-		{"preheader", NewsletterDraft{Subject: "S", Preheader: strings.Repeat("p", 201)}, "Preheader has 201 characters; keep it to 200"},
-		{"intro", NewsletterDraft{Subject: "S", Intro: strings.Repeat("i", 1201)}, "Intro has 1201 characters; keep it to 1200"},
-		{"closing", NewsletterDraft{Subject: "S", Closing: strings.Repeat("c", 601)}, "Closing has 601 characters; keep it to 600"},
-		{"item title required", NewsletterDraft{Subject: "S", Items: []NewsletterItem{{}, {Summary: "s"}}}, "Item 2 needs a title"},
-		{"item title", NewsletterDraft{Subject: "S", Items: []NewsletterItem{{Title: strings.Repeat("t", 161)}}}, "Item 1 title has 161 characters; keep it to 160"},
-		{"item summary", NewsletterDraft{Subject: "S", Items: []NewsletterItem{{Title: "t", Summary: strings.Repeat("s", 601)}}}, "Item 1 summary has 601 characters; keep it to 600"},
-		{"item count", NewsletterDraft{Subject: "S", Items: items(9)}, "Items has 9 entries; keep it to 8"},
-	}
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			draft, err := ValidateEditedNewsletter(testCase.draft)
-			if err == nil || !strings.Contains(err.Error(), testCase.want) {
-				t.Fatalf("error = %v, want %q", err, testCase.want)
-			}
-			if !reflect.DeepEqual(draft, NewsletterDraft{}) {
-				t.Fatalf("a rejected draft came back as %+v", draft)
-			}
-		})
-	}
-	if _, err := ValidateEditedNewsletter(NewsletterDraft{Subject: strings.Repeat("é", 120), Items: append(items(8), NewsletterItem{})}); err != nil {
-		t.Fatalf("a draft at every limit, plus a blank item, was rejected: %v", err)
-	}
-}
-
 func TestSlackReviewMessage(t *testing.T) {
 	blog := BlogDraft{
 		Title: "Connectors ship", Subtitle: "Retries and more", Summary: "The short version.", Closing: "See you next week.",
@@ -251,20 +197,33 @@ func TestSlackReviewMessage(t *testing.T) {
 	}
 	editorURL := "https://news.example.com/edit/blog-post-T-C1-1.0?token=0f0f"
 	dexWebURL := "https://dex.example.com/v2/runs/blog-post-T-C1-1.0"
-	message := SlackReviewMessage("*Draft 3 ready for review*: Connectors ship", blog, "Subject: This week at Acme\n\nHello readers.", "12 merged pull requests in acme/connectors", editorURL, dexWebURL)
+	message := SlackReviewMessage("*Draft 3 ready for review*: Connectors ship", blog, "12 merged pull requests in acme/connectors", editorURL, dexWebURL)
 	for _, want := range []string{
-		"*Draft 3 ready for review*: Connectors ship\nBased on 12 merged pull requests in acme/connectors.\n",
-		"*Connectors ship*\n_Retries and more_\n\nThe short version.\n",
+		"*Draft 3 ready for review*: Connectors ship\nBased on 12 merged pull requests in acme/connectors. " +
+			"The email sends this same post, with the subject line \"Connectors ship\".\n\n" +
+			"*Connectors ship*\n_Retries and more_\n\nThe short version.\n",
 		"\n*What changed*\nFirst paragraph.\n• Retry on 429\n",
 		"• <" + researchPullURL + "|Faster ¦ safer &lt;builds&gt; &amp; more>: Cuts build time.\n",
 		"• Unlinked: No page.\n",
-		"See you next week.\n\n*Newsletter email*\nSubject: This week at Acme\n\nHello readers.",
-		"*Reply in this thread* with `approve` to send it, `reject` to stop, or any feedback to get a revised draft.",
+		"See you next week.\n\n*Reply in this thread* with `approve` to send it, `reject` to stop, or any feedback to get a revised draft.\n",
 		"approve in the editor: " + editorURL,
-		"Dex Web: " + dexWebURL,
 	} {
 		if !strings.Contains(message, want) {
 			t.Errorf("message lacks %q:\n%s", want, message)
+		}
+	}
+	if !strings.HasSuffix(message, "\nDex Web: "+dexWebURL) {
+		t.Errorf("message does not end with the Dex Web link:\n%s", message)
+	}
+	// The email is this same post, so the post appears once and there is no separate email to review.
+	for _, piece := range []string{"*Connectors ship*", "_Retries and more_", "The short version.", "First paragraph.", "• Retry on 429", "Cuts build time.", "See you next week."} {
+		if count := strings.Count(message, piece); count != 1 {
+			t.Errorf("message has %q %d times:\n%s", piece, count, message)
+		}
+	}
+	for _, stale := range []string{"ewsletter", "Subject:", "*Email*"} {
+		if strings.Contains(message, stale) {
+			t.Errorf("message keeps a separate email section (%q):\n%s", stale, message)
 		}
 	}
 	if strings.Contains(message, "cut to fit Slack") {
@@ -274,18 +233,21 @@ func TestSlackReviewMessage(t *testing.T) {
 
 func TestSlackReviewMessageEscapesModelText(t *testing.T) {
 	blog := BlogDraft{
-		Title: "Hi <!channel>", Summary: "Read <https://phish.example|the notes> & more",
+		Title: "Hi <!channel> & <https://phish.example|you>", Summary: "Read <https://phish.example|the notes> & more",
 		Sections:   []BlogSection{{Heading: "<@U1>", Paragraphs: []string{"<!here> now"}, Bullets: []string{"a > b"}}},
 		Highlights: []BlogHighlight{{Title: "Plain <b>", Description: "<!everyone>"}},
 		Closing:    "Bye <#C1>",
 	}
-	message := SlackReviewMessage("*Draft 1 ready for review*: title", blog, "Email <!channel>", "summary <x>", "https://news.example.com/e", "https://dex.example.com/r")
+	message := SlackReviewMessage("*Draft 1 ready for review*: title", blog, "summary <x>", "https://news.example.com/e", "https://dex.example.com/r")
 	for _, raw := range []string{"<!channel>", "<!here>", "<!everyone>", "<https://phish.example", "<@U1>", "<#C1>", "<b>", "<x>"} {
 		if strings.Contains(message, raw) {
 			t.Errorf("message keeps Slack control text %q:\n%s", raw, message)
 		}
 	}
-	for _, escaped := range []string{"Hi &lt;!channel&gt;", "&amp; more", "a &gt; b", "Email &lt;!channel&gt;", "summary &lt;x&gt;"} {
+	for _, escaped := range []string{
+		"with the subject line \"Hi &lt;!channel&gt; &amp; &lt;https://phish.example|you&gt;\".",
+		"*Hi &lt;!channel&gt; &amp; &lt;https://phish.example|you&gt;*", "&amp; more", "a &gt; b", "Based on summary &lt;x&gt;.",
+	} {
 		if !strings.Contains(message, escaped) {
 			t.Errorf("message lacks %q:\n%s", escaped, message)
 		}
@@ -293,43 +255,30 @@ func TestSlackReviewMessageEscapesModelText(t *testing.T) {
 }
 
 func TestSlackReviewMessageCutsLongDrafts(t *testing.T) {
-	blog := BlogDraft{Title: "Long", Sections: []BlogSection{{Heading: "H", Paragraphs: []string{strings.Repeat("é", 2000)}}}}
+	blog := BlogDraft{Title: "Long"}
 	for len(blog.Sections) < 8 {
-		blog.Sections = append(blog.Sections, blog.Sections[0])
+		blog.Sections = append(blog.Sections, BlogSection{Heading: "H", Paragraphs: []string{strings.Repeat("é", 2000), strings.Repeat("ü", 2000)}})
 	}
-	newsletterText := strings.Repeat("ü", 40000)
 	editorURL := "https://news.example.com/edit/run?token=ab"
-	message := SlackReviewMessage("*Draft 1 ready for review*: Long", blog, newsletterText, "summary", editorURL, "https://dex.example.com/v2/runs/run")
-	if !strings.Contains(message, "\n… (cut to fit Slack; the editor has the full email)") {
-		t.Fatal("an oversized email was not marked as cut")
+	message := SlackReviewMessage("*Draft 1 ready for review*: Long", blog, "summary", editorURL, "https://dex.example.com/v2/runs/run")
+	if !strings.Contains(message, "\n… (cut to fit Slack; the editor has the full post)") {
+		t.Fatal("an oversized post was not marked as cut")
 	}
 	if !utf8.ValidString(message) {
 		t.Fatal("the cut split a character")
 	}
+	if !strings.HasPrefix(message, "*Draft 1 ready for review*: Long\nBased on summary. The email sends this same post, with the subject line \"Long\".\n\n*Long*\n") {
+		t.Fatalf("the cut dropped the heading or the subject line:\n%.300s", message)
+	}
 	if !strings.Contains(message, "`approve`") || !strings.Contains(message, editorURL) {
 		t.Fatal("the cut dropped the reply instructions or the editor link")
 	}
-	// The body is capped at maxSlackDraftRunes; the header and instructions add well under 1,000 more.
+	// The post is capped at maxSlackDraftRunes; the header and instructions add well under 1,000 more.
 	if count := utf8.RuneCountInString(message); count < maxSlackDraftRunes || count > maxSlackDraftRunes+1000 || count >= 40000 {
 		t.Fatalf("message has %d characters", count)
 	}
-	if strings.Count(message, "ü") >= 40000 {
-		t.Fatal("the whole newsletter was posted")
-	}
-}
-
-func TestSlackReviewMessageKeepsTheWholeEmailWhenThePostIsLong(t *testing.T) {
-	blog := BlogDraft{Title: "Long"}
-	for len(blog.Sections) < 8 {
-		blog.Sections = append(blog.Sections, BlogSection{Heading: "H", Paragraphs: []string{strings.Repeat("p", 2000), strings.Repeat("q", 2000)}})
-	}
-	email := "Subject line\n\nIntro that subscribers will receive.\n* Item\n  Summary\n\nUnsubscribe: https://news.example.com/unsubscribe"
-	message := SlackReviewMessage("*Draft 1 ready for review*: Long", blog, email, "summary", "https://news.example.com/e", "https://dex.example.com/r")
-	if !strings.Contains(message, "*Newsletter email*\n"+email) {
-		t.Fatal("the email was cut from a long review post")
-	}
-	if !strings.Contains(message, "(cut to fit Slack; the editor has the full post)") || utf8.RuneCountInString(message) > maxSlackDraftRunes+1000 {
-		t.Fatal("the long blog text was not cut to the budget")
+	if strings.Count(message, "é")+strings.Count(message, "ü") >= 8*4000 {
+		t.Fatal("the whole post was posted")
 	}
 }
 
@@ -342,8 +291,5 @@ func TestValidateEditedDraftAcceptsLegacyEllipsisFields(t *testing.T) {
 	original.Title = strings.Repeat("t", 161) + "…"
 	if _, err := ValidateEditedBlog(original, original); err == nil {
 		t.Fatal("a title two characters over the limit was accepted")
-	}
-	if _, err := ValidateEditedNewsletter(NewsletterDraft{Subject: strings.Repeat("s", 120) + "…"}); err != nil {
-		t.Fatalf("a legacy subject was rejected: %v", err)
 	}
 }

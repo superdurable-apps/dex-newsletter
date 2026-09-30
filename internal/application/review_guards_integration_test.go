@@ -37,9 +37,9 @@ func TestSlackApproveCountsOnlyForThePostedVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	blog, newsletter := clone(t, draft.Blog), clone(t, draft.Newsletter)
-	newsletter.Subject = "Edited after the reviewer read it"
-	if saved, err := h.app.Drafts.Save(ctx, flowID, token, blogpost.SaveDraftEditsInput{BaseVersion: 1, Blog: blog, Newsletter: newsletter}); err != nil || saved.Outcome != blogpost.OutcomeSaved {
+	blog := clone(t, draft.Blog)
+	blog.Title = "Edited after the reviewer read it"
+	if saved, err := h.app.Drafts.Save(ctx, flowID, token, blogpost.SaveDraftEditsInput{BaseVersion: 1, Blog: blog}); err != nil || saved.Outcome != blogpost.OutcomeSaved {
 		t.Fatalf("save = %+v, %v", saved, err)
 	}
 	// The run records the version it posted; the fake echoes placeholder text, so nothing may parse it.
@@ -59,10 +59,9 @@ func TestSlackApproveCountsOnlyForThePostedVersion(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 	_, emails, _ := h.fake.Snapshot()
-	for _, email := range emails {
-		if email.To == reader && email.Subject != "Edited after the reviewer read it" {
-			t.Fatalf("the reader got subject %q", email.Subject)
-		}
+	if received := emailsTo(emails, reader); len(received) != 1 || received[0].Subject != "Edited after the reviewer read it" ||
+		!strings.HasPrefix(received[0].Text, "Edited after the reviewer read it\n") {
+		t.Fatalf("emails to %s = %+v", reader, received)
 	}
 }
 
@@ -105,7 +104,7 @@ func TestRapidEditorSavesKeepTheLatestArtifact(t *testing.T) {
 		}
 		blog := clone(t, draft.Blog)
 		blog.Title = title
-		if saved, err := h.app.Drafts.Save(ctx, flowID, token, blogpost.SaveDraftEditsInput{BaseVersion: draft.DraftVersion, Blog: blog, Newsletter: draft.Newsletter}); err != nil || saved.Outcome != blogpost.OutcomeSaved {
+		if saved, err := h.app.Drafts.Save(ctx, flowID, token, blogpost.SaveDraftEditsInput{BaseVersion: draft.DraftVersion, Blog: blog}); err != nil || saved.Outcome != blogpost.OutcomeSaved {
 			t.Fatalf("save %d = %+v, %v", version+1, saved, err)
 		}
 	}

@@ -43,10 +43,16 @@ func TestSlackThreadReviewLoop(t *testing.T) {
 	view := h.waitForStatus(ctx, flowID, blogpost.StatusAwaitingReview)
 	firstTitle := fmt.Sprint(view["blog-title"])
 	post := h.waitForSlackPost(ctx, "*Draft 1 ready for review*: "+content.SlackText(firstTitle))
-	for _, want := range []string{"Stripe checkout", "*Newsletter email*", "Connectors grow up", "Reply in this thread",
-		fmt.Sprint(view["editor-url"]), "/v2/run/BlogPost/" + url.PathEscape(flowID)} {
+	for _, want := range []string{"Stripe checkout", "Reply in this thread", fmt.Sprint(view["editor-url"]), "/v2/run/BlogPost/" + url.PathEscape(flowID),
+		"The email sends this same post, with the subject line \"" + content.SlackText(firstTitle) + "\"."} {
 		if !strings.Contains(post, want) {
 			t.Fatalf("the review post lacks %q:\n%s", want, post)
+		}
+	}
+	// The post and the email are one document, so the review shows its text once.
+	for _, once := range []string{"The new `stripe` connector creates hosted checkout sessions.", "Try it out."} {
+		if got := strings.Count(post, once); got != 1 {
+			t.Fatalf("the review post shows %q %d times, want once:\n%s", once, got, post)
 		}
 	}
 
@@ -88,16 +94,8 @@ func TestSlackThreadReviewLoop(t *testing.T) {
 	if len(revisions) != 1 || !strings.Contains(revisions[0], "Lead with the model picker, please.") || strings.Contains(revisions[0], "UBOT") {
 		t.Fatalf("want one revision request carrying the feedback without its mention, got %d:\n%s", len(revisions), strings.Join(revisions, "\n---\n"))
 	}
-	// The email is revised too: the newsletter writer gets the feedback and the current email.
-	var emailRevisions []string
-	for _, request := range llmRequests {
-		if strings.Contains(request, "Revise the previous email") {
-			emailRevisions = append(emailRevisions, request)
-		}
-	}
-	if len(emailRevisions) != 1 || !strings.Contains(emailRevisions[0], "Lead with the model picker, please.") || !strings.Contains(emailRevisions[0], "Previous email:") {
-		t.Fatalf("want one email revision carrying the feedback and the previous email, got %d:\n%s", len(emailRevisions), strings.Join(emailRevisions, "\n---\n"))
-	}
+	// The revision changes the one document: nothing asks the model for a separate email.
+	assertOnlyPostModelCalls(t, llmRequests)
 
 	// Approve with any case and punctuation sends the revised newsletter.
 	h.waitForPostedDraft(ctx, flowID, 2)
@@ -108,7 +106,8 @@ func TestSlackThreadReviewLoop(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 	_, emails, _ := h.fake.Snapshot()
-	if received := emailsTo(emails, reader); len(received) != 1 || received[0].Subject != "Connectors grow up" {
+	if received := emailsTo(emails, reader); len(received) != 1 || received[0].Subject != "Connectors, revised" ||
+		!strings.Contains(received[0].HTML, ">Connectors, revised</h1>") || !strings.HasPrefix(received[0].Text, "Connectors, revised\n") {
 		t.Fatalf("emails to %s = %+v", reader, received)
 	}
 	h.waitForSlackPost(ctx, "Newsletter sent: ")
@@ -182,7 +181,7 @@ func TestSlackReviewWhileNeedsAttention(t *testing.T) {
 	// The editor refuses changes while nothing is in review.
 	token := h.editorToken(ctx, flowID)
 	draft, err := h.app.Drafts.Get(ctx, flowID, token)
-	if err != nil || draft.Editable || draft.Status != blogpost.StatusNeedsAttention || draft.DraftVersion != 0 || draft.BlogHTML != "" {
+	if err != nil || draft.Editable || draft.Status != blogpost.StatusNeedsAttention || draft.DraftVersion != 0 || draft.BlogHTML != "" || draft.EmailHTML != "" {
 		t.Fatalf("draft while stuck = %+v, %v", draft, err)
 	}
 	if saved, err := h.app.Drafts.Save(ctx, flowID, token, blogpost.SaveDraftEditsInput{}); err != nil || saved.Outcome != blogpost.OutcomeNotInReview {
@@ -241,36 +240,43 @@ func TestEditorSavesAndApprovesEditedDraft(t *testing.T) {
 		t.Fatal(err)
 	}
 	if draft.Status != blogpost.StatusAwaitingReview || !draft.Editable || draft.DraftVersion != 1 || draft.RevisionCount != 0 ||
-		draft.Blog.Slug != "connectors-grow-up" || draft.Newsletter.Subject != "Connectors grow up" {
+		draft.Blog.Slug != "connectors-grow-up" || draft.EmailSubject != draft.Blog.Title {
 		t.Fatalf("draft = %+v", draft)
 	}
-	if !strings.Contains(draft.BlogHTML, "<h1>"+template.HTMLEscapeString(draft.Blog.Title)+"</h1>") || strings.Contains(draft.BlogHTML, "<script>") ||
-		!strings.Contains(draft.NewsletterHTML, "Connectors grow up") {
-		t.Fatalf("draft rendering lacks the escaped title or the subject:\n%s", draft.BlogHTML)
+	escapedTitle := template.HTMLEscapeString(draft.Blog.Title)
+	if !strings.Contains(draft.BlogHTML, "<h1>"+escapedTitle+"</h1>") || strings.Contains(draft.BlogHTML, "<script>") ||
+		!strings.Contains(draft.EmailHTML, ">"+escapedTitle+"</h1>") || strings.Contains(draft.EmailHTML, "<script>") {
+		t.Fatalf("a draft rendering lacks the escaped title:\n%s\n---\n%s", draft.BlogHTML, draft.EmailHTML)
+	}
+	// Both renderings carry the same post.
+	for _, want := range []string{"The new <code>stripe</code> connector creates hosted checkout sessions.", "Try it out."} {
+		if !strings.Contains(draft.BlogHTML, want) || !strings.Contains(draft.EmailHTML, want) {
+			t.Fatalf("the blog or the email rendering lacks %q", want)
+		}
 	}
 
-	blog, newsletter := clone(t, draft.Blog), clone(t, draft.Newsletter)
+	blog := clone(t, draft.Blog)
 	blog.Title = "   "
-	preview, err := h.app.Drafts.Preview(ctx, flowID, token, blog, newsletter)
-	if err != nil || preview.Valid || !strings.Contains(preview.Message, "Title is required") || preview.BlogHTML != "" {
+	preview, err := h.app.Drafts.Preview(ctx, flowID, token, blog)
+	if err != nil || preview.Valid || !strings.Contains(preview.Message, "Title is required") || preview.BlogHTML != "" || preview.EmailHTML != "" {
 		t.Fatalf("preview without a title = %+v, %v", preview, err)
 	}
 	blog.Title = "Connectors, edited by hand"
 	blog.Sections[0].Paragraphs = []string{"An editor rewrote this paragraph before it shipped."}
-	newsletter.Subject = "Connectors, edited in the editor"
-	if _, err := h.app.Drafts.Preview(ctx, flowID, strings.Repeat("0", 32), blog, newsletter); !errors.Is(err, blogpost.ErrInvalidEditorLink) {
+	if _, err := h.app.Drafts.Preview(ctx, flowID, strings.Repeat("0", 32), blog); !errors.Is(err, blogpost.ErrInvalidEditorLink) {
 		t.Fatalf("preview with a forged token error = %v", err)
 	}
-	preview, err = h.app.Drafts.Preview(ctx, flowID, token, blog, newsletter)
+	preview, err = h.app.Drafts.Preview(ctx, flowID, token, blog)
 	if err != nil || !preview.Valid || !strings.Contains(preview.BlogHTML, "<h1>Connectors, edited by hand</h1>") ||
-		!strings.Contains(preview.BlogHTML, "An editor rewrote this paragraph") || !strings.Contains(preview.NewsletterHTML, "Connectors, edited in the editor") {
+		!strings.Contains(preview.BlogHTML, "An editor rewrote this paragraph") || preview.EmailSubject != "Connectors, edited by hand" ||
+		!strings.Contains(preview.EmailHTML, ">Connectors, edited by hand</h1>") || !strings.Contains(preview.EmailHTML, "An editor rewrote this paragraph") {
 		t.Fatalf("preview = %+v, %v", preview, err)
 	}
 	if view := h.display(ctx, flowID); view["blog-title"] != draft.Blog.Title || view["draft-version"] != float64(1) {
 		t.Fatalf("preview changed the run: title=%v version=%v", view["blog-title"], view["draft-version"])
 	}
 
-	edits := blogpost.SaveDraftEditsInput{BaseVersion: 1, Blog: blog, Newsletter: newsletter}
+	edits := blogpost.SaveDraftEditsInput{BaseVersion: 1, Blog: blog}
 	if _, err := h.app.Drafts.Save(ctx, flowID, links.Token(flowID+"0"), edits); !errors.Is(err, blogpost.ErrInvalidEditorLink) {
 		t.Fatalf("save with a forged token error = %v", err)
 	}
@@ -284,9 +290,13 @@ func TestEditorSavesAndApprovesEditedDraft(t *testing.T) {
 		t.Fatalf("save = %+v, %v", saved, err)
 	}
 	view := h.display(ctx, flowID)
-	if view["blog-status"] != blogpost.StatusAwaitingReview || view["blog-title"] != "Connectors, edited by hand" ||
-		view["newsletter-subject"] != "Connectors, edited in the editor" || view["draft-version"] != float64(2) {
-		t.Fatalf("after save status=%v title=%v subject=%v version=%v", view["blog-status"], view["blog-title"], view["newsletter-subject"], view["draft-version"])
+	if view["blog-status"] != blogpost.StatusAwaitingReview || view["blog-title"] != "Connectors, edited by hand" || view["draft-version"] != float64(2) {
+		t.Fatalf("after save status=%v title=%v version=%v", view["blog-status"], view["blog-title"], view["draft-version"])
+	}
+	for _, retired := range []string{"newsletter-subject", "newsletter-preview"} {
+		if value, shown := view[retired]; shown {
+			t.Fatalf("Dex Web still shows a separate email as %s = %v", retired, value)
+		}
 	}
 	h.waitForSlackPost(ctx, "*Draft 2, edited in the editor*: Connectors, edited by hand")
 	view = h.waitForDisplay(ctx, flowID, "the version 2 artifact", func(view map[string]any) bool {
@@ -307,7 +317,8 @@ func TestEditorSavesAndApprovesEditedDraft(t *testing.T) {
 	}
 	reloaded, err := h.app.Drafts.Get(ctx, flowID, token)
 	if err != nil || reloaded.DraftVersion != 2 || reloaded.Blog.Title != blog.Title || reloaded.Blog.Slug != draft.Blog.Slug ||
-		reloaded.Newsletter.Subject != newsletter.Subject || reloaded.Blog.Sections[0].Paragraphs[0] != blog.Sections[0].Paragraphs[0] {
+		reloaded.EmailSubject != blog.Title || reloaded.Blog.Sections[0].Paragraphs[0] != blog.Sections[0].Paragraphs[0] ||
+		!strings.Contains(reloaded.EmailHTML, "An editor rewrote this paragraph before it shipped.") {
 		t.Fatalf("reloaded draft = %+v, %v", reloaded, err)
 	}
 
@@ -333,15 +344,26 @@ func TestEditorSavesAndApprovesEditedDraft(t *testing.T) {
 	if result.Status != blogpost.StatusSent || result.Title != "Connectors, edited by hand" || result.Delivery.Total == 0 || result.Delivery.Sent != result.Delivery.Total {
 		t.Fatalf("result = %+v", result)
 	}
+	// The email is the edited post: the edited title is its subject and the edited paragraph its body.
 	_, emails, _ := h.fake.Snapshot()
 	received := emailsTo(emails, reader)
-	if len(received) != 1 || received[0].Subject != "Connectors, edited in the editor" || !strings.Contains(received[0].HTML, "Connectors, edited in the editor") ||
-		!strings.HasPrefix(received[0].Text, "Connectors, edited in the editor") {
+	if len(received) != 1 {
 		t.Fatalf("emails to %s = %+v", reader, received)
+	}
+	if received[0].Subject != "Connectors, edited by hand" {
+		t.Fatalf("the email subject is %q, want the edited title", received[0].Subject)
+	}
+	const editedParagraph = "An editor rewrote this paragraph before it shipped."
+	if !strings.Contains(received[0].HTML, ">Connectors, edited by hand</h1>") || !strings.Contains(received[0].HTML, ">"+editedParagraph+"</p>") ||
+		!strings.Contains(received[0].Text, "\n"+editedParagraph+"\n") || !strings.HasPrefix(received[0].Text, content.RenderBlogText(reloaded.Blog)) {
+		t.Fatalf("the email body is not the edited post:\n%s\n---\n%s", received[0].Text, received[0].HTML)
+	}
+	if original := "creates hosted checkout sessions"; strings.Contains(received[0].HTML, original) || strings.Contains(received[0].Text, original) {
+		t.Fatalf("the email still carries the paragraph the editor replaced")
 	}
 
 	// The closed run stays readable in the editor but no longer changes.
-	if saved, err := h.app.Drafts.Save(ctx, flowID, token, blogpost.SaveDraftEditsInput{BaseVersion: 2, Blog: blog, Newsletter: newsletter}); err != nil ||
+	if saved, err := h.app.Drafts.Save(ctx, flowID, token, blogpost.SaveDraftEditsInput{BaseVersion: 2, Blog: blog}); err != nil ||
 		saved.Outcome != blogpost.OutcomeNotInReview || saved.DraftVersion != 2 {
 		t.Fatalf("save after sending = %+v, %v", saved, err)
 	}
@@ -375,10 +397,9 @@ func TestSlackApprovalSendsEditorVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	blog, newsletter := clone(t, draft.Blog), clone(t, draft.Newsletter)
+	blog := clone(t, draft.Blog)
 	blog.Title = "Connectors, tightened in the editor"
-	newsletter.Subject = "Connectors, tightened"
-	saved, err := h.app.Drafts.Save(ctx, flowID, token, blogpost.SaveDraftEditsInput{BaseVersion: draft.DraftVersion, Blog: blog, Newsletter: newsletter})
+	saved, err := h.app.Drafts.Save(ctx, flowID, token, blogpost.SaveDraftEditsInput{BaseVersion: draft.DraftVersion, Blog: blog})
 	if err != nil || saved.Outcome != blogpost.OutcomeSaved || saved.DraftVersion != 2 {
 		t.Fatalf("save = %+v, %v", saved, err)
 	}
@@ -392,7 +413,8 @@ func TestSlackApprovalSendsEditorVersion(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 	_, emails, _ := h.fake.Snapshot()
-	if received := emailsTo(emails, reader); len(received) != 1 || received[0].Subject != "Connectors, tightened" {
+	if received := emailsTo(emails, reader); len(received) != 1 || received[0].Subject != "Connectors, tightened in the editor" ||
+		!strings.HasPrefix(received[0].Text, "Connectors, tightened in the editor\n") {
 		t.Fatalf("emails to %s = %+v", reader, received)
 	}
 	history := reviewEvents(t, h.display(ctx, flowID))
@@ -428,11 +450,11 @@ func TestEditorKeepsResearchLinks(t *testing.T) {
 	} {
 		blog := clone(t, draft.Blog)
 		change(&blog)
-		saved, err := h.app.Drafts.Save(ctx, flowID, token, blogpost.SaveDraftEditsInput{BaseVersion: 1, Blog: blog, Newsletter: draft.Newsletter})
+		saved, err := h.app.Drafts.Save(ctx, flowID, token, blogpost.SaveDraftEditsInput{BaseVersion: 1, Blog: blog})
 		if err != nil || saved.Outcome != blogpost.OutcomeInvalid || saved.DraftVersion != 1 || !strings.Contains(saved.Message, "links to a page the draft did not cite") {
 			t.Fatalf("save with %s = %+v, %v", name, saved, err)
 		}
-		preview, err := h.app.Drafts.Preview(ctx, flowID, token, blog, draft.Newsletter)
+		preview, err := h.app.Drafts.Preview(ctx, flowID, token, blog)
 		if err != nil || preview.Valid || !strings.Contains(preview.Message, "links to a page the draft did not cite") {
 			t.Fatalf("preview with %s = %+v, %v", name, preview, err)
 		}
@@ -446,7 +468,7 @@ func TestEditorKeepsResearchLinks(t *testing.T) {
 	blog.Highlights[0].Title = "Stripe checkout connector"
 	blog.Highlights[0].Description = "Hosted ACH checkout sessions."
 	blog.Slug = "a-different-slug"
-	saved, err := h.app.Drafts.Save(ctx, flowID, token, blogpost.SaveDraftEditsInput{BaseVersion: 1, Blog: blog, Newsletter: draft.Newsletter})
+	saved, err := h.app.Drafts.Save(ctx, flowID, token, blogpost.SaveDraftEditsInput{BaseVersion: 1, Blog: blog})
 	if err != nil || saved.Outcome != blogpost.OutcomeSaved || saved.DraftVersion != 2 {
 		t.Fatalf("save a renamed highlight = %+v, %v", saved, err)
 	}
@@ -461,6 +483,10 @@ func TestEditorKeepsResearchLinks(t *testing.T) {
 	}
 	if !strings.Contains(reloaded.BlogHTML, `<a href="`+stripeLink+`">Stripe checkout connector</a>`) {
 		t.Fatal("the renamed highlight lost its link in the rendering")
+	}
+	if !strings.Contains(reloaded.EmailHTML, `<a href="`+stripeLink+`"`) || !strings.Contains(reloaded.EmailHTML, ">Stripe checkout connector</a>") ||
+		strings.Contains(reloaded.EmailHTML, "evil.example") {
+		t.Fatal("the email rendering does not carry the renamed highlight with its research link")
 	}
 	view := h.waitForDisplay(ctx, flowID, "the version 2 artifact", func(view map[string]any) bool {
 		return strings.HasSuffix(fmt.Sprint(view["blog-artifact-path"]), "-v2.html")
@@ -686,6 +712,18 @@ func revisionRequests(llmRequests []string) []string {
 		}
 	}
 	return revisions
+}
+
+// assertOnlyPostModelCalls fails on any model request other than the triage, the repository choice,
+// and writing the post: the email is that same post, so nothing asks a model to write it.
+func assertOnlyPostModelCalls(t *testing.T, llmRequests []string) {
+	t.Helper()
+	for _, request := range llmRequests {
+		if !strings.Contains(request, "You triage requests") && !strings.Contains(request, "You pick source repositories") &&
+			!strings.Contains(request, "staff engineer writing") {
+			t.Fatalf("a model request is not the triage, the repository choice, or the post:\n%s", request)
+		}
+	}
 }
 
 // decodeAs converts a display value decoded as generic JSON into T.

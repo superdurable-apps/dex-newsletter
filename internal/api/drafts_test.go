@@ -32,7 +32,6 @@ type fakeDrafts struct {
 
 	flowID, token string
 	blog          content.BlogDraft
-	newsletter    content.NewsletterDraft
 	saved         blogpost.SaveDraftEditsInput
 	baseVersion   int64
 }
@@ -42,8 +41,8 @@ func (drafts *fakeDrafts) Get(_ context.Context, flowID, token string) (blogpost
 	return drafts.view, drafts.err
 }
 
-func (drafts *fakeDrafts) Preview(_ context.Context, flowID, token string, blog content.BlogDraft, newsletter content.NewsletterDraft) (blogpost.DraftPreview, error) {
-	drafts.flowID, drafts.token, drafts.blog, drafts.newsletter = flowID, token, blog, newsletter
+func (drafts *fakeDrafts) Preview(_ context.Context, flowID, token string, blog content.BlogDraft) (blogpost.DraftPreview, error) {
+	drafts.flowID, drafts.token, drafts.blog = flowID, token, blog
 	return drafts.preview, drafts.err
 }
 
@@ -81,13 +80,6 @@ func requestBlog() generated.BlogDraft {
 	}
 }
 
-func requestNewsletter() generated.NewsletterDraft {
-	return generated.NewsletterDraft{
-		Subject: "This week at Acme", Preheader: "In short", Intro: "Hello readers.", Closing: "Read the post.",
-		Items: []generated.NewsletterItem{{Title: "Retry", Summary: "Fewer failures."}, {Title: "Docs", Summary: "New guide."}},
-	}
-}
-
 func contentBlog() content.BlogDraft {
 	return content.BlogDraft{
 		Title: "Connectors ship", Subtitle: "Retries and more", Slug: "connectors-ship", Summary: "The short version.", Closing: "Thanks.",
@@ -99,13 +91,6 @@ func contentBlog() content.BlogDraft {
 			{Title: "Retry", Description: "Fewer failures.", URL: "https://example.com/acme/connectors/pull/1"},
 			{Title: "Docs", Description: "New guide."},
 		},
-	}
-}
-
-func contentNewsletter() content.NewsletterDraft {
-	return content.NewsletterDraft{
-		Subject: "This week at Acme", Preheader: "In short", Intro: "Hello readers.", Closing: "Read the post.",
-		Items: []content.NewsletterItem{{Title: "Retry", Summary: "Fewer failures."}, {Title: "Docs", Summary: "New guide."}},
 	}
 }
 
@@ -171,7 +156,7 @@ func assertServiceError(t *testing.T, response any, status int, code string) {
 func TestGetDraft(t *testing.T) {
 	drafts := &fakeDrafts{view: blogpost.EditableDraft{
 		Status: "awaiting-review", Editable: true, DraftVersion: 3, RevisionCount: 1,
-		Blog: contentBlog(), Newsletter: contentNewsletter(), BlogHTML: "<html>blog</html>", NewsletterHTML: "<html>email</html>",
+		Blog: contentBlog(), BlogHTML: "<html>blog</html>", EmailSubject: "Connectors ship", EmailHTML: "<html>email</html>",
 	}}
 	response, err := draftHandler(drafts).GetDraft(context.Background(), generated.GetDraftParams{RunId: testRunID, Token: testToken})
 	if err != nil {
@@ -183,7 +168,7 @@ func TestGetDraft(t *testing.T) {
 	}
 	want := &generated.DraftEditorView{
 		RunId: testRunID, Status: "awaiting-review", Editable: true, DraftVersion: 3, RevisionCount: 1,
-		Blog: requestBlog(), Newsletter: requestNewsletter(), BlogHtml: "<html>blog</html>", NewsletterHtml: "<html>email</html>",
+		Blog: requestBlog(), BlogHtml: "<html>blog</html>", EmailSubject: "Connectors ship", EmailHtml: "<html>email</html>",
 	}
 	if !reflect.DeepEqual(view, want) {
 		t.Fatalf("view = %+v\nwant   %+v", view, want)
@@ -205,9 +190,8 @@ func TestGetDraft(t *testing.T) {
 
 func TestGetDraftReturnsEmptyArrays(t *testing.T) {
 	drafts := &fakeDrafts{view: blogpost.EditableDraft{
-		Status: "sent", DraftVersion: 2,
-		Blog:       content.BlogDraft{Title: "T", Sections: []content.BlogSection{{Heading: "H"}}},
-		Newsletter: content.NewsletterDraft{Subject: "S"},
+		Status: "sent", DraftVersion: 2, EmailSubject: "T",
+		Blog: content.BlogDraft{Title: "T", Sections: []content.BlogSection{{Heading: "H"}}},
 	}}
 	response, err := draftHandler(drafts).GetDraft(context.Background(), generated.GetDraftParams{RunId: testRunID, Token: testToken})
 	if err != nil {
@@ -215,41 +199,44 @@ func TestGetDraftReturnsEmptyArrays(t *testing.T) {
 	}
 	view := response.(*generated.DraftEditorView)
 	section := view.Blog.Sections[0]
-	if view.Editable || section.Paragraphs == nil || section.Bullets == nil || view.Blog.Highlights == nil || view.Newsletter.Items == nil {
+	if view.Editable || section.Paragraphs == nil || section.Bullets == nil || view.Blog.Highlights == nil || view.EmailSubject != "T" {
 		t.Fatalf("view = %+v", view)
 	}
 	encoded, err := json.Marshal(view)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"paragraphs":[]`, `"bullets":[]`, `"highlights":[]`, `"items":[]`} {
+	for _, want := range []string{`"paragraphs":[]`, `"bullets":[]`, `"highlights":[]`, `"emailSubject":"T"`, `"emailHtml":""`} {
 		if !strings.Contains(string(encoded), want) {
 			t.Errorf("view JSON lacks %s: %s", want, encoded)
 		}
+	}
+	if strings.Contains(string(encoded), "newsletter") {
+		t.Errorf("view JSON still carries a newsletter document: %s", encoded)
 	}
 
 	response, err = draftHandler(&fakeDrafts{view: blogpost.EditableDraft{Status: "researching"}}).GetDraft(context.Background(), generated.GetDraftParams{RunId: testRunID, Token: testToken})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view := response.(*generated.DraftEditorView); view.Blog.Sections == nil || view.Blog.Highlights == nil || view.Newsletter.Items == nil {
-		t.Fatalf("a run without a draft returned nil arrays: %+v", view)
+	if view := response.(*generated.DraftEditorView); view.Blog.Sections == nil || view.Blog.Highlights == nil || view.EmailSubject != "" || view.EmailHtml != "" {
+		t.Fatalf("a run without a draft returned nil arrays or an email: %+v", view)
 	}
 }
 
 func TestPreviewDraft(t *testing.T) {
-	drafts := &fakeDrafts{preview: blogpost.DraftPreview{Valid: true, BlogHTML: "<html>blog</html>", NewsletterHTML: "<html>email</html>"}}
-	request := &generated.DraftPreviewRequest{Token: testToken, Blog: requestBlog(), Newsletter: requestNewsletter()}
+	drafts := &fakeDrafts{preview: blogpost.DraftPreview{Valid: true, BlogHTML: "<html>blog</html>", EmailSubject: "Connectors ship", EmailHTML: "<html>email</html>"}}
+	request := &generated.DraftPreviewRequest{Token: testToken, Blog: requestBlog()}
 	response, err := draftHandler(drafts).PreviewDraft(context.Background(), request, generated.PreviewDraftParams{RunId: testRunID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := &generated.DraftPreview{Valid: true, BlogHtml: "<html>blog</html>", NewsletterHtml: "<html>email</html>"}
+	want := &generated.DraftPreview{Valid: true, BlogHtml: "<html>blog</html>", EmailSubject: "Connectors ship", EmailHtml: "<html>email</html>"}
 	if !reflect.DeepEqual(response, want) {
 		t.Fatalf("preview = %+v", response)
 	}
-	if drafts.flowID != testRunID || drafts.token != testToken || !reflect.DeepEqual(drafts.blog, contentBlog()) || !reflect.DeepEqual(drafts.newsletter, contentNewsletter()) {
-		t.Fatalf("service called with %q, %q, %+v, %+v", drafts.flowID, drafts.token, drafts.blog, drafts.newsletter)
+	if drafts.flowID != testRunID || drafts.token != testToken || !reflect.DeepEqual(drafts.blog, contentBlog()) {
+		t.Fatalf("service called with %q, %q, %+v", drafts.flowID, drafts.token, drafts.blog)
 	}
 
 	invalid := &fakeDrafts{preview: blogpost.DraftPreview{Message: "Title is required"}}
@@ -274,17 +261,17 @@ func TestPreviewDraft(t *testing.T) {
 
 func TestPreviewDraftAcceptsEmptyLists(t *testing.T) {
 	drafts := &fakeDrafts{preview: blogpost.DraftPreview{Message: "keep at least one section"}}
-	request := &generated.DraftPreviewRequest{Token: testToken, Blog: generated.BlogDraft{Title: "T"}, Newsletter: generated.NewsletterDraft{Subject: "S"}}
+	request := &generated.DraftPreviewRequest{Token: testToken, Blog: generated.BlogDraft{Title: "T"}}
 	if _, err := draftHandler(drafts).PreviewDraft(context.Background(), request, generated.PreviewDraftParams{RunId: testRunID}); err != nil {
 		t.Fatal(err)
 	}
-	if drafts.blog.Title != "T" || len(drafts.blog.Sections) != 0 || len(drafts.blog.Highlights) != 0 || drafts.newsletter.Subject != "S" || len(drafts.newsletter.Items) != 0 {
-		t.Fatalf("service called with %+v, %+v", drafts.blog, drafts.newsletter)
+	if drafts.blog.Title != "T" || len(drafts.blog.Sections) != 0 || len(drafts.blog.Highlights) != 0 {
+		t.Fatalf("service called with %+v", drafts.blog)
 	}
 }
 
 func TestSaveDraft(t *testing.T) {
-	request := &generated.DraftSaveRequest{Token: testToken, BaseVersion: 4, Blog: requestBlog(), Newsletter: requestNewsletter()}
+	request := &generated.DraftSaveRequest{Token: testToken, BaseVersion: 4, Blog: requestBlog()}
 	drafts := &fakeDrafts{result: blogpost.DraftEditResult{Outcome: blogpost.OutcomeSaved, DraftVersion: 5}}
 	response, err := draftHandler(drafts).SaveDraft(context.Background(), request, generated.SaveDraftParams{RunId: testRunID})
 	if err != nil {
@@ -293,7 +280,7 @@ func TestSaveDraft(t *testing.T) {
 	if !reflect.DeepEqual(response, &generated.DraftChangeResult{Outcome: generated.DraftChangeResultOutcomeSaved, DraftVersion: 5}) {
 		t.Fatalf("response = %#v", response)
 	}
-	wantInput := blogpost.SaveDraftEditsInput{BaseVersion: 4, Blog: contentBlog(), Newsletter: contentNewsletter()}
+	wantInput := blogpost.SaveDraftEditsInput{BaseVersion: 4, Blog: contentBlog()}
 	if drafts.flowID != testRunID || drafts.token != testToken || !reflect.DeepEqual(drafts.saved, wantInput) {
 		t.Fatalf("service called with %q, %q, %+v", drafts.flowID, drafts.token, drafts.saved)
 	}
@@ -372,8 +359,8 @@ func TestApproveDraft(t *testing.T) {
 // TestDraftRoutesOverHTTP checks the generated router, decoders, and encoders end to end.
 func TestDraftRoutesOverHTTP(t *testing.T) {
 	blogJSON := `{"title":"T","subtitle":"","slug":"t","summary":"","closing":"","sections":[{"heading":"H","paragraphs":["p"],"bullets":[]}],"highlights":[]}`
-	newsletterJSON := `{"subject":"S","preheader":"","intro":"","items":[],"closing":""}`
-	saveBody := `{"token":"` + testToken + `","baseVersion":2,"blog":` + blogJSON + `,"newsletter":` + newsletterJSON + `}`
+	saveBody := `{"token":"` + testToken + `","baseVersion":2,"blog":` + blogJSON + `}`
+	previewBody := `{"token":"` + testToken + `","blog":` + blogJSON + `}`
 	cases := []struct {
 		name, method, path, body string
 		drafts                   *fakeDrafts
@@ -381,13 +368,19 @@ func TestDraftRoutesOverHTTP(t *testing.T) {
 		contains                 []string
 	}{
 		{"get", http.MethodGet, "/api/drafts/" + testRunID + "?token=" + testToken, "",
-			&fakeDrafts{view: blogpost.EditableDraft{Status: "awaiting-review", Editable: true, DraftVersion: 2, Blog: content.BlogDraft{Title: "T", Sections: []content.BlogSection{{Heading: "H"}}}}},
-			http.StatusOK, []string{`"runId":"` + testRunID + `"`, `"draftVersion":2`, `"paragraphs":[]`, `"highlights":[]`, `"items":[]`}},
+			&fakeDrafts{view: blogpost.EditableDraft{
+				Status: "awaiting-review", Editable: true, DraftVersion: 2, Blog: content.BlogDraft{Title: "T", Sections: []content.BlogSection{{Heading: "H"}}},
+				BlogHTML: "blog page", EmailSubject: "T", EmailHTML: "email page",
+			}},
+			http.StatusOK, []string{`"runId":"` + testRunID + `"`, `"draftVersion":2`, `"paragraphs":[]`, `"highlights":[]`, `"blogHtml":"blog page"`, `"emailSubject":"T"`, `"emailHtml":"email page"`}},
 		{"get forbidden", http.MethodGet, "/api/drafts/" + testRunID + "?token=forged", "",
 			&fakeDrafts{err: blogpost.ErrInvalidEditorLink}, http.StatusForbidden, []string{`"error":"invalid_editor_link"`}},
 		{"get unknown", http.MethodGet, "/api/drafts/" + testRunID + "?token=" + testToken, "",
 			&fakeDrafts{err: blogpost.ErrUnknownRun}, http.StatusNotFound, []string{`"error":"unknown_run"`}},
-		{"preview invalid", http.MethodPost, "/api/drafts/" + testRunID + "/preview", `{"token":"` + testToken + `","blog":` + blogJSON + `,"newsletter":` + newsletterJSON + `}`,
+		{"preview", http.MethodPost, "/api/drafts/" + testRunID + "/preview", previewBody,
+			&fakeDrafts{preview: blogpost.DraftPreview{Valid: true, BlogHTML: "blog page", EmailSubject: "T", EmailHTML: "email page"}},
+			http.StatusOK, []string{`"valid":true`, `"blogHtml":"blog page"`, `"emailSubject":"T"`, `"emailHtml":"email page"`}},
+		{"preview invalid", http.MethodPost, "/api/drafts/" + testRunID + "/preview", previewBody,
 			&fakeDrafts{preview: blogpost.DraftPreview{Message: "Title is required"}}, http.StatusOK, []string{`"valid":false`, `"message":"Title is required"`}},
 		{"save", http.MethodPut, "/api/drafts/" + testRunID, saveBody,
 			&fakeDrafts{result: blogpost.DraftEditResult{Outcome: blogpost.OutcomeSaved, DraftVersion: 3}}, http.StatusOK, []string{`"outcome":"saved"`, `"draftVersion":3`}},
@@ -426,8 +419,21 @@ func TestDraftRoutesOverHTTP(t *testing.T) {
 					t.Errorf("body lacks %s: %s", want, recorder.Body)
 				}
 			}
+			if strings.Contains(recorder.Body.String(), "newsletter") {
+				t.Errorf("body still carries a newsletter document: %s", recorder.Body)
+			}
 			if testCase.drafts.flowID != testRunID {
 				t.Fatalf("service called for run %q", testCase.drafts.flowID)
+			}
+			// Requests carry only the post; the decoded draft reaches the service.
+			if testCase.method != http.MethodGet && !strings.HasSuffix(testCase.path, "/approval") {
+				decoded := testCase.drafts.blog
+				if testCase.method == http.MethodPut {
+					decoded = testCase.drafts.saved.Blog
+				}
+				if decoded.Title != "T" || len(decoded.Sections) != 1 || decoded.Sections[0].Paragraphs[0] != "p" {
+					t.Fatalf("service received %+v", decoded)
+				}
 			}
 		})
 	}

@@ -37,7 +37,7 @@ type Providers struct {
 	now          time.Time
 }
 
-// SentEmail is one message the fake Gmail accepted.
+// SentEmail is one message the fake Gmail accepted; Text and HTML are the decoded bodies.
 type SentEmail struct {
 	To      string `json:"to"`
 	Subject string `json:"subject"`
@@ -175,6 +175,8 @@ func (fake *Providers) serveGemini(response http.ResponseWriter, request *http.R
 		writeJSON(response, map[string]any{"error": map[string]any{"code": 400, "message": "fake rejection", "status": "INVALID_ARGUMENT"}})
 		return
 	}
+	// The application asks for a triage, a repository choice, and the post; the email is that
+	// same post, so any other request is refused.
 	var reply any
 	switch {
 	case strings.Contains(text, "You triage requests"):
@@ -195,9 +197,6 @@ func (fake *Providers) serveGemini(response http.ResponseWriter, request *http.R
 				{"title": "Stripe connector", "description": "Hosted ACH checkout.", "url": "https://github.com/acme/connectors/pull/11"},
 				{"title": "Invented link", "description": "Should lose its URL.", "url": "https://evil.example/phish"},
 			}, "closing": "Try it out."}
-	case strings.Contains(text, "newsletter email"):
-		reply = map[string]any{"subject": "Connectors grow up", "preheader": "Stripe checkout and more.", "intro": "Two big connector updates shipped.",
-			"items": []map[string]any{{"title": "Stripe checkout", "summary": "Hosted ACH checkout sessions."}}, "closing": "Read the full post."}
 	default:
 		response.WriteHeader(http.StatusBadRequest)
 		return
@@ -255,7 +254,8 @@ func parseEmail(raw []byte) SentEmail {
 		if err != nil {
 			break
 		}
-		body := decodePart(part)
+		// MIME carries text in CRLF form; a reader sees plain line breaks.
+		body := strings.ReplaceAll(decodePart(part), "\r\n", "\n")
 		if strings.HasPrefix(part.Header.Get("Content-Type"), "text/html") {
 			email.HTML = body
 		} else {

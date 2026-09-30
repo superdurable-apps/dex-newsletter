@@ -2119,7 +2119,16 @@ func (flow *Flow) nextEmail(ctx dex.Context) (OutgoingEmail, error) {
 		return OutgoingEmail{}, err
 	}
 	approved, err := deliveryDraft.Get(ctx)
-	if err != nil {
+	var missing *dex.AttributeNotFoundError
+	if errors.As(err, &missing) {
+		// A delivery that began before the snapshot existed sends the current post.
+		if approved.Blog, err = blogDraft.Get(ctx); err != nil {
+			return OutgoingEmail{}, err
+		}
+		if approved.Window, err = changeWindow.Get(ctx); err != nil {
+			return OutgoingEmail{}, err
+		}
+	} else if err != nil {
 		return OutgoingEmail{}, err
 	}
 	address := recipients[progress.Next]

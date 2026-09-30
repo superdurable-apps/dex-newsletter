@@ -236,9 +236,10 @@ func TestBlogPostFromSlackToNewsletter(t *testing.T) {
 		t.Fatalf("after revision title=%v revisions=%v", view["blog-title"], view["revision-count"])
 	}
 	_, _, llmRequests := h.fake.Snapshot()
-	if !strings.Contains(llmRequests[len(llmRequests)-2], "Lead with the model picker.") {
-		t.Fatal("the revision request did not carry the editor notes")
+	if revisions := revisionRequests(llmRequests); len(revisions) != 1 || !strings.Contains(revisions[0], "Lead with the model picker.") {
+		t.Fatalf("want one revision request carrying the editor notes, got %d", len(revisions))
 	}
+	assertOnlyPostModelCalls(t, llmRequests)
 
 	// Replace the Worker while the run waits for review.
 	h.stop()
@@ -259,8 +260,32 @@ func TestBlogPostFromSlackToNewsletter(t *testing.T) {
 		t.Fatalf("sent %d emails, want 2", len(emails))
 	}
 	for _, email := range emails {
-		if email.Subject != "Connectors grow up" || !strings.Contains(email.HTML, "https://blog.acme.test/connectors-grow-up") {
-			t.Fatalf("email = %+v", email)
+		// The email is the approved post: its title is the subject and its content is the body.
+		if email.Subject != "Connectors, revised" {
+			t.Fatalf("email subject = %q, want the post title", email.Subject)
+		}
+		for _, want := range []string{">Connectors, revised</h1>", "Two weeks of connector work", "Stripe checkout and a live model picker.",
+			">Stripe checkout</h2>", "The new <code>stripe</code> connector creates hosted checkout sessions.", "<li>ACH payments</li>",
+			`<a href="https://github.com/acme/connectors/pull/11"`, "Hosted ACH checkout.", "Invented link", "Try it out.",
+			`href="https://blog.acme.test/connectors-grow-up"`} {
+			if !strings.Contains(email.HTML, want) {
+				t.Fatalf("the HTML email to %s lacks %q:\n%s", email.To, want, email.HTML)
+			}
+		}
+		for _, unwanted := range []string{"<script>", "evil.example"} {
+			if strings.Contains(email.HTML, unwanted) || strings.Contains(email.Text, unwanted) {
+				t.Fatalf("the email to %s contains %q", email.To, unwanted)
+			}
+		}
+		if !strings.HasPrefix(email.Text, "Connectors, revised\nTwo weeks of connector work\n") {
+			t.Fatalf("the text email to %s does not open with the post title:\n%s", email.To, email.Text)
+		}
+		for _, want := range []string{"## Stripe checkout", "The new `stripe` connector creates hosted checkout sessions.", "- ACH payments",
+			"- Stripe connector: Hosted ACH checkout. (https://github.com/acme/connectors/pull/11)", "Try it out.",
+			"Read it on the blog: https://blog.acme.test/connectors-grow-up"} {
+			if !strings.Contains(email.Text, want) {
+				t.Fatalf("the text email to %s lacks %q:\n%s", email.To, want, email.Text)
+			}
 		}
 		link := regexp.MustCompile(`https://news\.acme\.test/unsubscribe\?[^"\s]+`).FindString(email.Text)
 		parsed, err := url.Parse(link)
