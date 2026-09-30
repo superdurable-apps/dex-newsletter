@@ -40,27 +40,37 @@ type UnsubscribeLinks struct {
 	key     []byte
 }
 
-// LoadUnsubscribeLinks reads the HMAC key, creating a random 32-byte key when the file is absent.
-func LoadUnsubscribeLinks(baseURL, keyFile string) (UnsubscribeLinks, error) {
+// LoadSigningKey reads the HMAC key that signs reader and editor links, creating a random
+// 32-byte key when the file is absent.
+func LoadSigningKey(keyFile string) ([]byte, error) {
 	contents, err := os.ReadFile(keyFile)
 	if errors.Is(err, os.ErrNotExist) {
 		key := make([]byte, 32)
 		if _, err := rand.Read(key); err != nil {
-			return UnsubscribeLinks{}, err
+			return nil, err
 		}
 		if err := os.MkdirAll(filepath.Dir(keyFile), 0o700); err != nil {
-			return UnsubscribeLinks{}, err
+			return nil, err
 		}
 		contents = []byte(hex.EncodeToString(key))
 		if err := os.WriteFile(keyFile, contents, 0o600); err != nil {
-			return UnsubscribeLinks{}, err
+			return nil, err
 		}
 	} else if err != nil {
-		return UnsubscribeLinks{}, fmt.Errorf("read unsubscribe key: %w", err)
+		return nil, fmt.Errorf("read signing key: %w", err)
 	}
 	key, err := hex.DecodeString(strings.TrimSpace(string(contents)))
 	if err != nil || len(key) < 16 {
-		return UnsubscribeLinks{}, errors.New("unsubscribe key file must hold at least 16 hex-encoded bytes")
+		return nil, errors.New("signing key file must hold at least 16 hex-encoded bytes")
+	}
+	return key, nil
+}
+
+// LoadUnsubscribeLinks signs unsubscribe links with the key in keyFile.
+func LoadUnsubscribeLinks(baseURL, keyFile string) (UnsubscribeLinks, error) {
+	key, err := LoadSigningKey(keyFile)
+	if err != nil {
+		return UnsubscribeLinks{}, err
 	}
 	return NewUnsubscribeLinks(baseURL, key), nil
 }

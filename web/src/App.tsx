@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
 import { getApplicationInfo, subscribeToNewsletter, unsubscribeFromNewsletter } from './api/generated/sdk.gen';
 import type { ApplicationInfo } from './api/generated/types.gen';
+import { EditorWireframe } from './EditorWireframe';
 
 const fallbackInfo: ApplicationInfo = { name: 'Dex Tech Blog' };
 
@@ -168,6 +169,7 @@ export function App() {
   }
 
   // Render elements, not per-render component types, so a page keeps its state when App re-renders.
+  if (path.startsWith('/edit/')) return <EditorWireframe tab={new URLSearchParams(window.location.search).get('tab') === 'newsletter' ? 'newsletter' : 'blog'} />;
   if (path === '/subscribed') return <SubscribedPage info={info} already={already} />;
   if (path === '/unsubscribe') return <UnsubscribePage info={info} search={window.location.search} />;
   return <SubscribePage info={info} onSubscribed={subscribed} />;

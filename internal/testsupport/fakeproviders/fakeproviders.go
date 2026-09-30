@@ -1,6 +1,6 @@
-//go:build integration
-
-package application_test
+// Package fakeproviders serves canned Slack, GitHub, Gemini, and Gmail APIs on one loopback
+// server for integration and end-to-end tests. It is never linked into the application.
+package fakeproviders
 
 import (
 	"encoding/base64"
@@ -17,7 +17,6 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"testing"
 	"time"
 
 	"github.com/superdurable-apps/dex-newsletter/internal/blogpost"
@@ -25,34 +24,48 @@ import (
 	"github.com/superdurable/dex-connectors-library/sdkgo/localconfig"
 )
 
-// providers fakes Slack, GitHub, Gemini, and Gmail on one loopback server.
-type providers struct {
+// Providers fakes Slack, GitHub, Gemini, and Gmail on one loopback server.
+type Providers struct {
 	*httptest.Server
 	mutex        sync.Mutex
 	slackPosts   []string
 	llmRequests  []string
-	emails       []sentEmail
+	emails       []SentEmail
 	failWriting  int
 	rejectSendTo map[string]int
 	now          time.Time
 }
 
-type sentEmail struct {
+// SentEmail is one message the fake Gmail accepted.
+type SentEmail struct {
 	To      string
 	Subject string
 	Text    string
 	HTML    string
 }
 
-func newProviders(t *testing.T) *providers {
-	t.Helper()
-	fake := &providers{rejectSendTo: map[string]int{}, now: time.Now().UTC()}
+// New starts the fake on a free loopback port; call Close when done.
+func New() *Providers {
+	fake := &Providers{rejectSendTo: map[string]int{}, now: time.Now().UTC()}
 	fake.Server = httptest.NewServer(http.HandlerFunc(fake.serve))
-	t.Cleanup(fake.Server.Close)
 	return fake
 }
 
-func (fake *providers) serve(response http.ResponseWriter, request *http.Request) {
+// FailBlogWriting rejects the next count blog-writing generations with HTTP 400.
+func (fake *Providers) FailBlogWriting(count int) {
+	fake.mutex.Lock()
+	defer fake.mutex.Unlock()
+	fake.failWriting = count
+}
+
+// RejectSendTo answers the next count sends to address with HTTP 401.
+func (fake *Providers) RejectSendTo(address string, count int) {
+	fake.mutex.Lock()
+	defer fake.mutex.Unlock()
+	fake.rejectSendTo[address] = count
+}
+
+func (fake *Providers) serve(response http.ResponseWriter, request *http.Request) {
 	path := request.URL.Path
 	switch {
 	case path == "/slack/chat.postMessage":
@@ -68,7 +81,7 @@ func (fake *providers) serve(response http.ResponseWriter, request *http.Request
 	}
 }
 
-func (fake *providers) serveSlack(response http.ResponseWriter, request *http.Request) {
+func (fake *Providers) serveSlack(response http.ResponseWriter, request *http.Request) {
 	var payload map[string]any
 	_ = json.NewDecoder(request.Body).Decode(&payload)
 	fake.mutex.Lock()
@@ -79,7 +92,7 @@ func (fake *providers) serveSlack(response http.ResponseWriter, request *http.Re
 		"message": map[string]any{"ts": fmt.Sprintf("9.%d", count), "thread_ts": payload["thread_ts"], "user": "UBOT", "text": payload["text"]}})
 }
 
-func (fake *providers) serveGitHub(response http.ResponseWriter, request *http.Request, path string) {
+func (fake *Providers) serveGitHub(response http.ResponseWriter, request *http.Request, path string) {
 	response.Header().Set("X-OAuth-Scopes", "read:user, user:email")
 	recent := fake.now.Add(-24 * time.Hour)
 	switch {
@@ -113,7 +126,7 @@ func (fake *providers) serveGitHub(response http.ResponseWriter, request *http.R
 	}
 }
 
-func (fake *providers) serveGemini(response http.ResponseWriter, request *http.Request) {
+func (fake *Providers) serveGemini(response http.ResponseWriter, request *http.Request) {
 	body, _ := io.ReadAll(request.Body)
 	text := string(body)
 	fake.mutex.Lock()
@@ -163,7 +176,7 @@ func (fake *providers) serveGemini(response http.ResponseWriter, request *http.R
 	})
 }
 
-func (fake *providers) serveGmail(response http.ResponseWriter, request *http.Request) {
+func (fake *Providers) serveGmail(response http.ResponseWriter, request *http.Request) {
 	var payload struct {
 		Raw string `json:"raw"`
 	}
@@ -189,12 +202,12 @@ func (fake *providers) serveGmail(response http.ResponseWriter, request *http.Re
 	writeJSON(response, map[string]any{"id": fmt.Sprintf("message-%d", len(fake.emails)), "threadId": "thread"})
 }
 
-func parseEmail(raw []byte) sentEmail {
+func parseEmail(raw []byte) SentEmail {
 	message, err := mail.ReadMessage(strings.NewReader(string(raw)))
 	if err != nil {
-		return sentEmail{}
+		return SentEmail{}
 	}
-	email := sentEmail{Subject: message.Header.Get("Subject")}
+	email := SentEmail{Subject: message.Header.Get("Subject")}
 	if decoded, err := new(mime.WordDecoder).DecodeHeader(email.Subject); err == nil {
 		email.Subject = decoded
 	}
@@ -229,10 +242,11 @@ func decodePart(part *multipart.Part) string {
 	return string(contents)
 }
 
-func (fake *providers) snapshot() (slackPosts []string, emails []sentEmail, llmRequests []string) {
+// Snapshot copies every Slack post, accepted email, and model request so far.
+func (fake *Providers) Snapshot() (slackPosts []string, emails []SentEmail, llmRequests []string) {
 	fake.mutex.Lock()
 	defer fake.mutex.Unlock()
-	return append([]string(nil), fake.slackPosts...), append([]sentEmail(nil), fake.emails...), append([]string(nil), fake.llmRequests...)
+	return append([]string(nil), fake.slackPosts...), append([]SentEmail(nil), fake.emails...), append([]string(nil), fake.llmRequests...)
 }
 
 func writeJSON(response http.ResponseWriter, value any) {
@@ -240,10 +254,9 @@ func writeJSON(response http.ResponseWriter, value any) {
 	_ = json.NewEncoder(response).Encode(value)
 }
 
-// writeConnectionStore writes the Dex Web connection file pointing every provider at the fake.
-func writeConnectionStore(t *testing.T, baseURL string) string {
-	t.Helper()
-	directory := t.TempDir()
+// WriteConnectionStore writes a Dex Web connection file in directory that points every
+// provider at baseURL, with Trigger bindings for channel CBLOG and reviewer UREVIEWER.
+func WriteConnectionStore(directory, baseURL string) (string, error) {
 	path := filepath.Join(directory, "connections.json")
 	connection := func(connectorID, modulePath, version, provider, name string, configuration, credentials map[string]any) map[string]any {
 		return map[string]any{"connectorId": connectorID, "modulePath": "github.com/superdurable/dex-connectors-library/connectors/" + modulePath,
@@ -261,16 +274,22 @@ func writeConnectionStore(t *testing.T, baseURL string) string {
 			connection("gmail", "google/gmail", "v0.13.0", "gmail", blogpost.GmailConnectionName, map[string]any{"endpoint": baseURL + "/gmail"},
 				map[string]any{"access_token": "fake-gmail-token", "primary_email": "news@acme.test"}),
 		},
-		"triggerBindings": []any{map[string]any{
-			"connectorId": "slack", "connectionName": blogpost.SlackConnectionName, "triggerName": "channelThreadCreated",
-			"bindingName": blogpost.RequestTriggerBinding, "configuration": map[string]any{"channelId": "CBLOG", "threadTriggerMatcher": map[string]any{}},
-		}},
+		"triggerBindings": []any{
+			map[string]any{
+				"connectorId": "slack", "connectionName": blogpost.SlackConnectionName, "triggerName": "channelThreadCreated",
+				"bindingName": blogpost.RequestTriggerBinding, "configuration": map[string]any{"channelId": "CBLOG", "threadTriggerMatcher": map[string]any{}},
+			},
+			map[string]any{
+				"connectorId": "slack", "connectionName": blogpost.SlackConnectionName, "triggerName": "threadReplyCreated",
+				"bindingName": blogpost.ReviewTriggerBinding, "configuration": map[string]any{"channelId": "CBLOG", "threadReplyMatcher": map[string]any{"posterUserIds": []string{"UREVIEWER"}}},
+			},
+		},
 	})
 	if err != nil {
-		t.Fatal(err)
+		return "", err
 	}
 	if err := os.WriteFile(path, contents, 0o600); err != nil {
-		t.Fatal(err)
+		return "", err
 	}
-	return path
+	return path, nil
 }

@@ -53,7 +53,7 @@ func run() error {
 		return err
 	}
 	defer app.Close()
-	apiHandler, err := api.NewHandler(app.Subscribers, api.ApplicationInfo{Name: configuration.Blog.PublicationName, DexWebURL: configuration.DexWebURL}, logger)
+	apiHandler, err := api.NewHandler(app.Subscribers, app.Drafts, api.ApplicationInfo{Name: configuration.Blog.PublicationName, DexWebURL: configuration.DexWebURL}, logger)
 	if err != nil {
 		return fmt.Errorf("create OpenAPI handler: %w", err)
 	}

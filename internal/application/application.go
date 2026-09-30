@@ -42,6 +42,7 @@ type Options struct {
 
 type Application struct {
 	Subscribers *subscribers.Service
+	Drafts      *blogpost.EditorService
 	BlogPosts   *blogpost.Flow
 	Client      *dex.Client
 	logger      *slog.Logger
@@ -82,14 +83,16 @@ func New(options Options) (*Application, error) {
 	if err != nil {
 		return nil, err
 	}
-	links, err := subscribers.LoadUnsubscribeLinks(options.Config.Newsletter.PublicBaseURL, options.Config.Newsletter.UnsubscribeKeyFile)
+	key, err := subscribers.LoadSigningKey(options.Config.Newsletter.UnsubscribeKeyFile)
 	if err != nil {
 		return nil, err
 	}
+	links := subscribers.NewUnsubscribeLinks(options.Config.Newsletter.PublicBaseURL, key)
+	editorLinks := blogpost.NewEditorLinks(options.Config.Newsletter.PublicBaseURL, key)
 	directory := &subscriberDirectory{}
 	blogPosts := blogpost.NewFlow(blogpost.Dependencies{
 		Slack: slackConnection, GitHub: githubConnection, LLM: llmConnection, Gmail: gmailConnection,
-		Models: models, Config: options.Config, Subscribers: directory, Unsubscribe: links,
+		Models: models, Config: options.Config, Subscribers: directory, Unsubscribe: links, Editor: editorLinks,
 	})
 	registry, err := dex.NewRegistry([]dex.Flow{blogPosts, subscribers.Flow{}})
 	if err != nil {
@@ -114,7 +117,7 @@ func New(options Options) (*Application, error) {
 	}
 	directory.service = subscribers.NewService(client, links)
 	application := &Application{
-		Subscribers: directory.service, BlogPosts: blogPosts, Client: client,
+		Subscribers: directory.service, Drafts: blogpost.NewEditorService(client, blogPosts, editorLinks), BlogPosts: blogPosts, Client: client,
 		logger: logger, worker: worker, cache: cache, workerBindAddress: options.WorkerBindAddress,
 	}
 	if !options.WithoutSlackTrigger {
@@ -127,21 +130,37 @@ func New(options Options) (*Application, error) {
 }
 
 func newSlackTrigger(store *localconfig.Store, client *dex.Client, flow *blogpost.Flow, logger *slog.Logger, options []slack.Option) (*slack.MessageTriggerRunner, error) {
-	triggerName := slack.ChannelThreadCreatedTriggerDefinition.Trigger.TriggerName
-	var configuration slack.ChannelThreadCreatedTriggerConfiguration
-	if err := store.DecodeTriggerConfiguration(slack.ConnectorID, blogpost.SlackConnectionName, triggerName, blogpost.RequestTriggerBinding, &configuration); err != nil {
+	requestTrigger := slack.ChannelThreadCreatedTriggerDefinition.Trigger.TriggerName
+	var requestConfiguration slack.ChannelThreadCreatedTriggerConfiguration
+	if err := store.DecodeTriggerConfiguration(slack.ConnectorID, blogpost.SlackConnectionName, requestTrigger, blogpost.RequestTriggerBinding, &requestConfiguration); err != nil {
 		return nil, fmt.Errorf("%w; pick the blog request channel for Trigger binding %q in Dex Web Connections, then restart", err, blogpost.RequestTriggerBinding)
 	}
-	filter, err := blogpost.NewRequestTriggerFilter(configuration)
+	requestFilter, err := blogpost.NewRequestTriggerFilter(requestConfiguration)
 	if err != nil {
 		return nil, err
 	}
-	bindingLogger := logger.With("connector", slack.ConnectorID, "connection", blogpost.SlackConnectionName, "trigger", triggerName, "binding", blogpost.RequestTriggerBinding)
+	reviewTrigger := slack.ThreadReplyCreatedTriggerDefinition.Trigger.TriggerName
+	var reviewConfiguration slack.ThreadReplyCreatedTriggerConfiguration
+	if err := store.DecodeTriggerConfiguration(slack.ConnectorID, blogpost.SlackConnectionName, reviewTrigger, blogpost.ReviewTriggerBinding, &reviewConfiguration); err != nil {
+		return nil, fmt.Errorf("%w; pick the channel and reviewers for Trigger binding %q in Dex Web Connections, then restart", err, blogpost.ReviewTriggerBinding)
+	}
+	reviewFilter, err := blogpost.NewReviewTriggerFilter(reviewConfiguration)
+	if err != nil {
+		return nil, fmt.Errorf("Trigger binding %q: %w", blogpost.ReviewTriggerBinding, err)
+	}
+	bindingLogger := func(trigger, binding string) *slog.Logger {
+		return logger.With("connector", slack.ConnectorID, "connection", blogpost.SlackConnectionName, "trigger", trigger, "binding", binding)
+	}
 	return slack.NewLocalMessageTriggerRunner(store, blogpost.SlackConnectionName, slack.LocalMessageTriggerRunnerConfig{
 		ChannelThreadCreatedRoutes: []slack.LocalChannelThreadCreatedTriggerRoute{{
 			BindingName: blogpost.RequestTriggerBinding,
-			Target: sdkgo.NewDexFlowTriggerTarget(client, flow, filter, blogpost.ResolveRequestFlowID, blogpost.MapToSlackRequest,
-				sdkgo.WithTriggerLogger(bindingLogger)),
+			Target: sdkgo.NewDexFlowTriggerTarget(client, flow, requestFilter, blogpost.ResolveRequestFlowID, blogpost.MapToSlackRequest,
+				sdkgo.WithTriggerLogger(bindingLogger(requestTrigger, blogpost.RequestTriggerBinding))),
+		}},
+		ThreadReplyCreatedRoutes: []slack.LocalThreadReplyCreatedTriggerRoute{{
+			BindingName: blogpost.ReviewTriggerBinding,
+			Target: sdkgo.NewDexRPCTriggerTarget(client, flow.ReceiveSlackReview, reviewFilter, blogpost.ResolveReviewFlowID, blogpost.MapToSlackReviewReply,
+				sdkgo.WithTriggerLogger(bindingLogger(reviewTrigger, blogpost.ReviewTriggerBinding))),
 		}},
 	}, append(append([]slack.Option{}, options...), slack.WithLogger(logger))...)
 }
