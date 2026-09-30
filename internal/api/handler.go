@@ -25,12 +25,13 @@ type ApplicationInfo struct {
 
 type Handler struct {
 	newsletter Newsletter
+	drafts     Drafts
 	info       ApplicationInfo
 	logger     *slog.Logger
 }
 
-func NewHandler(newsletter Newsletter, info ApplicationInfo, logger *slog.Logger) (*generated.Server, error) {
-	handler := &Handler{newsletter: newsletter, info: info, logger: logger}
+func NewHandler(newsletter Newsletter, drafts Drafts, info ApplicationInfo, logger *slog.Logger) (*generated.Server, error) {
+	handler := &Handler{newsletter: newsletter, drafts: drafts, info: info, logger: logger}
 	return generated.NewServer(handler,
 		generated.WithErrorHandler(writeGeneratedError),
 		generated.WithNotFound(func(w http.ResponseWriter, _ *http.Request) {

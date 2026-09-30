@@ -19,6 +19,7 @@ import (
 	"github.com/superdurable-apps/dex-newsletter/internal/blogpost"
 	"github.com/superdurable-apps/dex-newsletter/internal/config"
 	"github.com/superdurable-apps/dex-newsletter/internal/subscribers"
+	"github.com/superdurable-apps/dex-newsletter/internal/testsupport/fakeproviders"
 
 	"github.com/superdurable/dex-connectors-library/connectors/slack"
 	llmrouter "github.com/superdurable/dex-connectors-library/connectors/superdurable/llm"
@@ -29,7 +30,7 @@ import (
 
 type harness struct {
 	t         *testing.T
-	fake      *providers
+	fake      *fakeproviders.Providers
 	options   application.Options
 	app       *application.Application
 	cancelRun context.CancelFunc
@@ -39,8 +40,13 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	fake := newProviders(t)
-	store, err := localconfig.LoadFile(writeConnectionStore(t, fake.URL))
+	fake := fakeproviders.New()
+	t.Cleanup(fake.Close)
+	storePath, err := fakeproviders.WriteConnectionStore(t.TempDir(), fake.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := localconfig.LoadFile(storePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +235,7 @@ func TestBlogPostFromSlackToNewsletter(t *testing.T) {
 	if view["blog-title"] != "Connectors, revised" || view["revision-count"] != float64(1) {
 		t.Fatalf("after revision title=%v revisions=%v", view["blog-title"], view["revision-count"])
 	}
-	_, _, llmRequests := h.fake.snapshot()
+	_, _, llmRequests := h.fake.Snapshot()
 	if !strings.Contains(llmRequests[len(llmRequests)-2], "Lead with the model picker.") {
 		t.Fatal("the revision request did not carry the editor notes")
 	}
@@ -248,7 +254,7 @@ func TestBlogPostFromSlackToNewsletter(t *testing.T) {
 		t.Fatal("approve after completion was accepted")
 	}
 
-	slackPosts, emails, _ := h.fake.snapshot()
+	slackPosts, emails, _ := h.fake.Snapshot()
 	if len(emails) != 2 {
 		t.Fatalf("sent %d emails, want 2", len(emails))
 	}
@@ -273,7 +279,7 @@ func TestBlogPostFromSlackToNewsletter(t *testing.T) {
 		t.Fatalf("remaining subscribers = %v, %v", remaining, err)
 	}
 	joined := strings.Join(slackPosts, "\n")
-	for _, want := range []string{"On it.", "Draft ready for review", "/v2/run/BlogPost/" + url.PathEscape(flowID), "Newsletter sent: 2 of 2 sent"} {
+	for _, want := range []string{"On it.", "ready for review", "/v2/run/BlogPost/" + url.PathEscape(flowID), "Newsletter sent: 2 of 2 sent"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("Slack replies lack %q:\n%s", want, joined)
 		}
@@ -295,10 +301,8 @@ func TestFailuresWaitForRetry(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 	h := newHarness(t)
-	h.fake.mutex.Lock()
-	h.fake.failWriting = 1
-	h.fake.rejectSendTo["second@example.com"] = 1
-	h.fake.mutex.Unlock()
+	h.fake.FailBlogWriting(1)
+	h.fake.RejectSendTo("second@example.com", 1)
 	for _, address := range []string{"first@example.com", "second@example.com", "third@example.com"} {
 		if _, err := h.app.Subscribers.Subscribe(ctx, address); err != nil {
 			t.Fatal(err)
@@ -329,7 +333,7 @@ func TestFailuresWaitForRetry(t *testing.T) {
 	if result.Status != blogpost.StatusSent || result.Delivery.Sent != 3 {
 		t.Fatalf("result = %+v", result)
 	}
-	_, emails, _ := h.fake.snapshot()
+	_, emails, _ := h.fake.Snapshot()
 	sent := map[string]int{}
 	for _, email := range emails {
 		sent[email.To]++
