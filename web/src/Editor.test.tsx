@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 import { Editor, PREVIEW_DELAY_MS } from './Editor';
@@ -268,6 +268,22 @@ describe('Editor', () => {
     expect(textbox('Title')).toBeDisabled();
     expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Approve and send' })).not.toBeInTheDocument();
+  });
+
+  it('offers Reload when a revision took the draft out of review, and reopens editing after it', async () => {
+    api.getDraft
+      .mockResolvedValueOnce({ data: draftView() })
+      .mockResolvedValueOnce({ data: { ...draftView(), draftVersion: 2, blog: { ...draftView().blog, title: 'Revised by the model' } } });
+    api.saveDraft.mockResolvedValue(conflict('not_in_review', 'The draft is being updated (writing). Reload when the next version is posted to Slack.'));
+    renderEditor();
+    fireEvent.change(await loaded(), { target: { value: 'Edit during a revision' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The draft is being updated (writing).');
+    fireEvent.click(screen.getByRole('button', { name: 'Reload' }));
+    await waitFor(() => expect(textbox('Title')).toHaveValue('Revised by the model'));
+    expect(textbox('Title')).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Approve and send' })).toBeEnabled();
   });
 
   it('asks to save before approving while there are unsaved edits', async () => {

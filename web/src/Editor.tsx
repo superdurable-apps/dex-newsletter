@@ -61,6 +61,11 @@ function closedReason(status: string) {
   }
 }
 
+// Whether a closed draft comes back to review, so reloading later can reopen editing.
+function reopens(status: string) {
+  return ['interpreting', 'researching', 'writing', 'retrying', 'needs-attention'].includes(status);
+}
+
 function editorRoute(path: string, search: string) {
   let runId = '';
   try {
@@ -302,8 +307,9 @@ export function Editor({ info, path, search }: { info: ApplicationInfo; path: st
 
   function refused(problem: Failure) {
     if (problem.code === 'not_in_review') {
+      // A revision or retry returns the draft to review later, so offer Reload instead of a dead end.
       setClosed(true);
-      setNotice({ tone: 'error', text: problem.message });
+      setNotice({ tone: 'error', text: problem.message, reload: true });
       return;
     }
     setNotice({ tone: 'error', text: problem.message, reload: problem.code === 'draft_changed' });
@@ -424,7 +430,16 @@ export function Editor({ info, path, search }: { info: ApplicationInfo; path: st
         <p className="eyebrow">NEWSLETTER · EDITOR</p>
         <h1>{view.blog.title || 'Untitled draft'}</h1>
         <p className="editor-meta">Status: {statusLabel(view.status)} · draft version {view.draftVersion} · revisions {view.revisionCount}</p>
-        {!view.editable && <p className="editor-closed" role="status">{closedReason(view.status)}</p>}
+        {!view.editable && (
+          <p className="editor-closed" role="status">
+            {closedReason(view.status)}{' '}
+            {reopens(view.status) && (
+              <button type="button" className="button-secondary" onClick={reload} disabled={busy !== null}>
+                {busy === 'reloading' ? 'Reloading…' : 'Reload'}
+              </button>
+            )}
+          </p>
+        )}
       </header>
       <nav className="editor-tabs" aria-label="Draft parts">
         <a href={tabHref('blog')} aria-current={tab === 'blog' ? 'page' : undefined} onClick={(event) => selectTab(event, 'blog')}>Blog post</a>

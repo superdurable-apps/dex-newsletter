@@ -125,6 +125,9 @@ type RevisionRequest struct {
 type NewsletterWritingInput struct {
 	Draft           content.BlogDraft `json:"draft"`
 	PublicationName string            `json:"publicationName"`
+	// EditorNotes and PreviousNewsletter are set for a revision, so feedback about the email reaches it.
+	EditorNotes        string                   `json:"editorNotes,omitempty"`
+	PreviousNewsletter *content.NewsletterDraft `json:"previousNewsletter,omitempty"`
 }
 
 type OutgoingEmail struct {
@@ -400,7 +403,7 @@ func (flow *Flow) GetSteps() []dex.StepDef {
 				Bindings: []sdkgo.ConnectorUIBinding{{Port: llmrouter.UIModelPickerPortModel, JSONPointer: "/model"}},
 			}}},
 			MapToOperationInput: func(input NewsletterWritingInput) llmrouter.GenerateTextRequest {
-				return content.NewsletterWritingRequest(flow.deps.Models.WriteNewsletter, input.Draft, input.PublicationName)
+				return content.NewsletterWritingRequest(flow.deps.Models.WriteNewsletter, input.Draft, input.PublicationName, input.EditorNotes, input.PreviousNewsletter)
 			},
 			Generated: sdkgo.GoTo(RecordNewsletterDraft{}), Truncated: sdkgo.GoTo(RecordNewsletterDraft{}),
 			Blocked: sdkgo.GoTo(RecordNewsletterDraft{}), ProviderRejected: sdkgo.GoTo(RecordNewsletterDraft{}),
@@ -933,13 +936,17 @@ func (step RecordBlogDraft) Execute(ctx dex.Context, result llmrouter.GenerateTe
 		return nil, err
 	}
 	version, err := draftVersion.Get(ctx)
-	if err != nil {
+	if version, err = orDefault(version, err, 0); err != nil {
 		return nil, err
 	}
 	if err := draftVersion.Set(ctx, version+1); err != nil {
 		return nil, err
 	}
-	return dex.GoTo(sdkgo.StepRef[NewsletterWritingInput](stepWriteNewsletter), NewsletterWritingInput{Draft: draft, PublicationName: blog.PublicationName}), nil
+	input, err := step.flow.newsletterWritingInput(ctx, draft)
+	if err != nil {
+		return nil, err
+	}
+	return dex.GoTo(sdkgo.StepRef[NewsletterWritingInput](stepWriteNewsletter), input), nil
 }
 
 // dex:group group-id:writing group-label:"Writing"
@@ -1016,14 +1023,15 @@ func (step EnterReview) Execute(ctx dex.Context, _ dex.None) (*dex.StepDecision,
 		return nil, err
 	}
 	link, err := editorURL.Get(ctx)
-	if err != nil {
+	if link, err = orDefault(link, err, step.flow.deps.Editor.URL(ctx.FlowID())); err != nil {
 		return nil, err
 	}
 	version, err := draftVersion.Get(ctx)
-	if err != nil {
+	if version, err = orDefault(version, err, 0); err != nil {
 		return nil, err
 	}
-	message := content.SlackReviewMessage(draft, newsletter, summary, link, step.flow.runLink(ctx), version)
+	heading := fmt.Sprintf("*Draft %d ready for review*: %s", version, content.SlackText(draft.Title))
+	message := content.SlackReviewMessage(heading, draft, newsletter, summary, link, step.flow.runLink(ctx))
 	return dex.GoToMany(
 		dex.MovementOf(sdkgo.StepRef[SlackNotice](stepPostSlackNotice), noticeFor(request, message)),
 		dex.MovementOf(AwaitEditorDecision{}, nil),
@@ -1031,7 +1039,7 @@ func (step EnterReview) Execute(ctx dex.Context, _ dex.None) (*dex.StepDecision,
 }
 
 // dex:group group-id:review group-label:"Review"
-// dex:explanation text:"Re-render the blog artifact from the editor's saved version and tell the Slack thread."
+// dex:explanation text:"Re-render the blog artifact from the editor's saved version and post the edited draft to the Slack thread."
 type ApplyDraftEdits struct {
 	dex.StepDefaultsNoWaitFor[DraftEditsSaved]
 	flow *Flow
@@ -1068,10 +1076,20 @@ func (step ApplyDraftEdits) Execute(ctx dex.Context, saved DraftEditsSaved) (*de
 		return nil, err
 	}
 	link, err := editorURL.Get(ctx)
+	if link, err = orDefault(link, err, step.flow.deps.Editor.URL(ctx.FlowID())); err != nil {
+		return nil, err
+	}
+	newsletter, err := newsletterPreview.Get(ctx)
 	if err != nil {
 		return nil, err
 	}
-	message := fmt.Sprintf("Draft %d, edited in the editor: *%s*\nReply `approve` to send this version, `reject` to stop, or feedback to revise it. Editor: %s", saved.Version, content.SlackText(draft.Title), link)
+	summary, err := researchSummary.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Post the whole edited draft, so a Slack approval approves text the reviewers can read.
+	heading := fmt.Sprintf("*Draft %d, edited in the editor*: %s", saved.Version, content.SlackText(draft.Title))
+	message := content.SlackReviewMessage(heading, draft, newsletter, summary, link, step.flow.runLink(ctx))
 	return dex.GoTo(sdkgo.StepRef[SlackNotice](stepPostSlackNotice), noticeFor(request, message)), nil
 }
 
@@ -1134,15 +1152,23 @@ func (step AwaitEditorDecision) Execute(ctx dex.Context, _ dex.None) (*dex.StepD
 	if err != nil {
 		return nil, err
 	}
-	if len(decisions) != 1 || decisions[0].Round != round {
-		// A decision from an earlier round raced its own Action; keep waiting for this round.
-		return dex.GoTo(AwaitEditorDecision{}, nil), nil
-	}
-	decision := decisions[0]
 	stage, err := attentionStage.Get(ctx)
 	if err != nil {
 		return nil, err
 	}
+	if len(decisions) != 1 || decisions[0].Round != round {
+		// A decision from an earlier round raced a save or another Action; Dex Web runs Actions
+		// without their locks, so it may have moved the status. Put it back and keep waiting.
+		waiting := StatusAwaitingReview
+		if stage != "" {
+			waiting = StatusNeedsAttention
+		}
+		if err := blogStatus.Set(ctx, waiting); err != nil {
+			return nil, err
+		}
+		return dex.GoTo(AwaitEditorDecision{}, nil), nil
+	}
+	decision := decisions[0]
 	request, err := blogRequest.Get(ctx)
 	if err != nil {
 		return nil, err
@@ -1200,7 +1226,10 @@ func (step AwaitEditorDecision) Execute(ctx dex.Context, _ dex.None) (*dex.StepD
 		if err != nil {
 			return nil, err
 		}
-		input := NewsletterWritingInput{Draft: draft, PublicationName: step.flow.deps.Config.Blog.PublicationName}
+		input, err := step.flow.newsletterWritingInput(ctx, draft)
+		if err != nil {
+			return nil, err
+		}
 		return dex.GoTo(sdkgo.StepRef[NewsletterWritingInput](stepWriteNewsletter), input), nil
 	case StageDeliver:
 		email, err := step.flow.nextEmail(ctx)
@@ -1475,7 +1504,7 @@ func (flow *Flow) GetDraftForEditing(ctx dex.Context, _ dex.None) (*dex.RPCResul
 		return nil, err
 	}
 	version, err := draftVersion.Get(ctx)
-	if err != nil {
+	if version, err = orDefault(version, err, 0); err != nil {
 		return nil, err
 	}
 	revisions, err := revisionCount.Get(ctx)
@@ -1552,11 +1581,11 @@ func (flow *Flow) SaveDraftEdits(ctx dex.Context, input SaveDraftEditsInput) (*d
 		return nil, err
 	}
 	version, err := draftVersion.Get(ctx)
-	if err != nil {
+	if version, err = orDefault(version, err, 0); err != nil {
 		return nil, err
 	}
 	if status != StatusAwaitingReview {
-		return &dex.RPCResult[DraftEditResult]{Output: DraftEditResult{Outcome: OutcomeNotInReview, DraftVersion: version, Message: "This draft is " + status + ", so it can no longer be edited."}}, nil
+		return &dex.RPCResult[DraftEditResult]{Output: DraftEditResult{Outcome: OutcomeNotInReview, DraftVersion: version, Message: notInReviewMessage(status)}}, nil
 	}
 	if input.BaseVersion != version {
 		return &dex.RPCResult[DraftEditResult]{Output: DraftEditResult{Outcome: OutcomeDraftChanged, DraftVersion: version, Message: "The draft changed since you opened it. Reload to see the new version."}}, nil
@@ -1600,7 +1629,7 @@ func (flow *Flow) SaveDraftEdits(ctx dex.Context, input SaveDraftEditsInput) (*d
 		return nil, err
 	}
 	history, err := reviewHistory.Get(ctx)
-	if err != nil {
+	if history, err = orDefault(history, err, []ReviewEvent{}); err != nil {
 		return nil, err
 	}
 	if err := reviewHistory.Set(ctx, appendReviewEvent(history, ReviewEvent{At: time.Now().UTC(), Source: "editor", Action: "edited", Detail: fmt.Sprintf("version %d", version+1)})); err != nil {
@@ -1623,11 +1652,11 @@ func (flow *Flow) ApproveEditedDraft(ctx dex.Context, input ApproveEditedDraftIn
 		return nil, err
 	}
 	version, err := draftVersion.Get(ctx)
-	if err != nil {
+	if version, err = orDefault(version, err, 0); err != nil {
 		return nil, err
 	}
 	if status != StatusAwaitingReview {
-		return &dex.RPCResult[DraftEditResult]{Output: DraftEditResult{Outcome: OutcomeNotInReview, DraftVersion: version, Message: "This draft is " + status + ", so it can no longer be approved."}}, nil
+		return &dex.RPCResult[DraftEditResult]{Output: DraftEditResult{Outcome: OutcomeNotInReview, DraftVersion: version, Message: notInReviewMessage(status)}}, nil
 	}
 	if input.BaseVersion != version {
 		return &dex.RPCResult[DraftEditResult]{Output: DraftEditResult{Outcome: OutcomeDraftChanged, DraftVersion: version, Message: "The draft changed since you opened it. Reload and review it before approving."}}, nil
@@ -1640,7 +1669,7 @@ func (flow *Flow) ApproveEditedDraft(ctx dex.Context, input ApproveEditedDraftIn
 		return nil, err
 	}
 	history, err := reviewHistory.Get(ctx)
-	if err != nil {
+	if history, err = orDefault(history, err, []ReviewEvent{}); err != nil {
 		return nil, err
 	}
 	if err := reviewHistory.Set(ctx, appendReviewEvent(history, ReviewEvent{At: time.Now().UTC(), Source: "editor", Action: "approved", Detail: fmt.Sprintf("version %d", version)})); err != nil {
@@ -1665,7 +1694,7 @@ type SlackReviewResult struct {
 // or feedback that revises the draft. Redelivered Slack events are recognized and skipped.
 func (flow *Flow) ReceiveSlackReview(ctx dex.Context, reply SlackReviewReply) (*dex.RPCResult[SlackReviewResult], error) {
 	events, err := slackReviewEvents.Get(ctx)
-	if err != nil {
+	if events, err = orDefault(events, err, []string{}); err != nil {
 		return nil, err
 	}
 	for _, eventID := range events {
@@ -1721,7 +1750,7 @@ func (flow *Flow) ReceiveSlackReview(ctx dex.Context, reply SlackReviewReply) (*
 			return nil, err
 		}
 		history, err := reviewHistory.Get(ctx)
-		if err != nil {
+		if history, err = orDefault(history, err, []ReviewEvent{}); err != nil {
 			return nil, err
 		}
 		detail := ""
@@ -1738,6 +1767,48 @@ func (flow *Flow) ReceiveSlackReview(ctx dex.Context, reply SlackReviewReply) (*
 		result.NextSteps = []dex.StepMovement{dex.MovementOf(sdkgo.StepRef[SlackNotice](stepPostSlackNotice), noticeFor(request, acknowledgement))}
 	}
 	return result, nil
+}
+
+// notInReviewMessage says why a draft cannot change now, and whether it will be back.
+func notInReviewMessage(status string) string {
+	switch status {
+	case StatusDelivering:
+		return "This draft is approved and being sent; editing is closed."
+	case StatusSent, StatusRejected, StatusStopped, StatusNotARequest, StatusNoChanges:
+		return "This run is " + status + "; editing is closed."
+	case StatusNeedsAttention:
+		return "This run needs attention (retry or reject it in Slack or Dex Web); reload when the draft is back in review."
+	}
+	return "The draft is being updated (" + status + "). Reload when the next version is posted to Slack."
+}
+
+// orDefault returns fallback for an Attribute a run never wrote, such as one added after the run started.
+func orDefault[T any](value T, err error, fallback T) (T, error) {
+	var missing *dex.AttributeNotFoundError
+	if errors.As(err, &missing) {
+		return fallback, nil
+	}
+	return value, err
+}
+
+// newsletterWritingInput asks for the email; on a revision it carries the notes and the current email.
+func (flow *Flow) newsletterWritingInput(ctx dex.Context, draft content.BlogDraft) (NewsletterWritingInput, error) {
+	input := NewsletterWritingInput{Draft: draft, PublicationName: flow.deps.Config.Blog.PublicationName}
+	revisions, err := revisionCount.Get(ctx)
+	if err != nil || revisions == 0 {
+		return input, err
+	}
+	if input.EditorNotes, err = editorNotes.Get(ctx); err != nil {
+		return NewsletterWritingInput{}, err
+	}
+	previous, err := newsletterDraft.Get(ctx)
+	if err != nil {
+		return NewsletterWritingInput{}, err
+	}
+	if previous.Subject != "" {
+		input.PreviousNewsletter = &previous
+	}
+	return input, nil
 }
 
 func appendReviewEvent(history []ReviewEvent, event ReviewEvent) []ReviewEvent {
@@ -1826,7 +1897,7 @@ func (*Flow) GetDexSummary(ctx dex.Context, _ dex.None) (*dex.RPCResult[map[stri
 // dex:field attribute-key:editor-url value-type:string editable:false description:"Editor (edit and approve before sending)"
 // dex:field attribute-key:draft-version value-type:int64 editable:false description:"Draft version"
 // dex:field attribute-key:review-history value-type:array editable:false description:"Review history"
-func (*Flow) GetDexDisplay(ctx dex.Context, _ dex.None) (*dex.RPCResult[map[string]any], error) {
+func (flow *Flow) GetDexDisplay(ctx dex.Context, _ dex.None) (*dex.RPCResult[map[string]any], error) {
 	title, err := blogTitle.Get(ctx)
 	if err != nil {
 		return nil, err
@@ -1892,15 +1963,15 @@ func (*Flow) GetDexDisplay(ctx dex.Context, _ dex.None) (*dex.RPCResult[map[stri
 		return nil, err
 	}
 	editor, err := editorURL.Get(ctx)
-	if err != nil {
+	if editor, err = orDefault(editor, err, flow.deps.Editor.URL(ctx.FlowID())); err != nil {
 		return nil, err
 	}
 	version, err := draftVersion.Get(ctx)
-	if err != nil {
+	if version, err = orDefault(version, err, 0); err != nil {
 		return nil, err
 	}
 	history, err := reviewHistory.Get(ctx)
-	if err != nil {
+	if history, err = orDefault(history, err, []ReviewEvent{}); err != nil {
 		return nil, err
 	}
 	return &dex.RPCResult[map[string]any]{Output: map[string]any{
