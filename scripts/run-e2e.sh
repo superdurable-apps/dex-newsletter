@@ -1,37 +1,75 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Runs the reader pages against the real Go application and Dex Server. Providers
-# point at an unreachable loopback port: the journey never calls them.
-npm --prefix web run build
+# Runs the Playwright journeys against the real Go application and the Dex Server that
+# scripts/with-dex.sh started. e2eproviders fakes Slack, GitHub, Gemini, and Gmail on a free
+# loopback port and writes the connection store; e2eseed prepares one BlogPost run awaiting
+# review for the draft editor journey (see internal/testsupport/e2eseed for why it seeds with its
+# own short-lived Worker). Everything is built into and runs from the test directory, so a local
+# application serving web/dist is left alone.
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+cd "${root}"
 artifacts="${DEX_TEST_ARTIFACT_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/dex-blog-newsletter-e2e.XXXXXX")}"
 port="${E2E_PORT:-18080}"
-unused="http://127.0.0.1:9"
-mkdir -p "${artifacts}/connectors"
-cat >"${artifacts}/connectors/connections.json" <<JSON
-{"schemaVersion":"connectors.dex.dev/local-connections/v1alpha1","connections":[
- {"connectorId":"slack","modulePath":"github.com/superdurable/dex-connectors-library/connectors/slack","moduleVersion":"v0.11.0","provider":"slack","connectionName":"slack-workspace","configuration":{"endpoint":"${unused}"},"credentials":{"bot_token":"fake-bot-token","user_token":"fake-user-token","app_token":"fake-app-token"}},
- {"connectorId":"github","modulePath":"github.com/superdurable/dex-connectors-library/connectors/github","moduleVersion":"v0.8.0","provider":"github","connectionName":"github","configuration":{"baseUrl":"${unused}"},"credentials":{"access_token":"fake-github-token"}},
- {"connectorId":"llm","modulePath":"github.com/superdurable/dex-connectors-library/connectors/superdurable/llm","moduleVersion":"v0.1.0","provider":"llm","connectionName":"llm","configuration":{"model":"gemini/gemini-e2e"},"credentials":{"gemini_api_key":"AIza-e2e"}},
- {"connectorId":"gmail","modulePath":"github.com/superdurable/dex-connectors-library/connectors/google/gmail","moduleVersion":"v0.13.0","provider":"gmail","connectionName":"newsletter-sender","configuration":{"endpoint":"${unused}"},"credentials":{"access_token":"fake-gmail-token","primary_email":"news@example.com"}}
-]}
-JSON
-chmod 600 "${artifacts}/connectors/connections.json"
-export E2E_UNSUBSCRIBE_KEY_FILE="${artifacts}/unsubscribe.key"
-cat >"${artifacts}/config.json" <<JSON
-{"github":{"owners":["e2e"]},"dexWebUrl":"http://127.0.0.1:8842",
- "blog":{"artifactDirectory":"${artifacts}/blog"},
- "newsletter":{"publicBaseUrl":"http://127.0.0.1:${port}","unsubscribeKeyFile":"${E2E_UNSUBSCRIBE_KEY_FILE}"}}
-JSON
-app_log="${artifacts}/application.log"
-DEX_CONNECTOR_CONFIG_FILE="${artifacts}/connectors/connections.json" BLOG_NEWSLETTER_CONFIG="${artifacts}/config.json" \
-  SLACK_TRIGGER=off PORT="${port}" go run ./cmd/server >"${app_log}" 2>&1 &
-app_pid=$!
-cleanup() { exit_code=$?; trap - EXIT INT TERM; kill "${app_pid}" 2>/dev/null || true; wait "${app_pid}" 2>/dev/null || true; exit "${exit_code}"; }
+app_url="http://127.0.0.1:${port}"
+bin="${artifacts}/bin"
+# cmd/server serves web/dist relative to its working directory.
+app_directory="${artifacts}/app"
+mkdir -p "${bin}" "${app_directory}/web" "${artifacts}/connectors"
+
+npm --prefix web run build -- --outDir "${app_directory}/web/dist" --emptyOutDir
+go build -o "${bin}/" ./cmd/server ./internal/testsupport/e2eproviders ./internal/testsupport/e2eseed
+
+providers_pid=""
+app_pid=""
+cleanup() {
+  exit_code=$?
+  trap - EXIT INT TERM
+  for pid in ${app_pid} ${providers_pid}; do kill "${pid}" 2>/dev/null || true; done
+  for pid in ${app_pid} ${providers_pid}; do wait "${pid}" 2>/dev/null || true; done
+  if [[ "${exit_code}" -ne 0 ]]; then
+    for log in providers application seed; do
+      if [[ -s "${artifacts}/${log}.log" ]]; then echo "--- ${log}.log (last 60 lines)" >&2; tail -n 60 "${artifacts}/${log}.log" >&2; fi
+    done
+  fi
+  exit "${exit_code}"
+}
 trap cleanup EXIT INT TERM
-deadline=$((SECONDS + 60))
-until curl --fail --silent "http://127.0.0.1:${port}/api/health" >/dev/null && [[ -s "${E2E_UNSUBSCRIBE_KEY_FILE}" ]]; do
-  if (( SECONDS >= deadline )) || ! kill -0 "${app_pid}" 2>/dev/null; then cat "${app_log}"; exit 1; fi
-  sleep 0.2
-done
-E2E_BASE_URL="http://127.0.0.1:${port}" npm --prefix web run test:e2e
+
+# wait_for SECONDS PID WHAT COMMAND... polls COMMAND until it succeeds, PID exits, or the deadline passes.
+wait_for() {
+  local seconds=$1 pid=$2 what=$3
+  shift 3
+  local deadline=$((SECONDS + seconds))
+  until "$@"; do
+    if (( SECONDS >= deadline )); then echo "timed out waiting for ${what}" >&2; return 1; fi
+    if ! kill -0 "${pid}" 2>/dev/null; then echo "stopped before ${what}" >&2; return 1; fi
+    sleep 0.2
+  done
+}
+
+"${bin}/e2eproviders" -connections-dir "${artifacts}/connectors" -url-file "${artifacts}/fake-url" >"${artifacts}/providers.log" 2>&1 &
+providers_pid=$!
+wait_for 30 "${providers_pid}" "the fake providers" test -s "${artifacts}/fake-url"
+fake_url="$(<"${artifacts}/fake-url")"
+
+export DEX_CONNECTOR_CONFIG_FILE="${artifacts}/connectors/connections.json"
+export BLOG_NEWSLETTER_CONFIG="${artifacts}/config.json"
+export E2E_UNSUBSCRIBE_KEY_FILE="${artifacts}/unsubscribe.key"
+export E2E_SEED_FILE="${artifacts}/editor-seed.json"
+# Editor and unsubscribe links point at this application; the Dex Web link is never followed.
+cat >"${BLOG_NEWSLETTER_CONFIG}" <<JSON
+{"github":{"owners":["acme"]},"dexWebUrl":"https://dex-web.acme.test",
+ "blog":{"artifactDirectory":"${artifacts}/blog"},
+ "newsletter":{"publicBaseUrl":"${app_url}","unsubscribeKeyFile":"${E2E_UNSUBSCRIBE_KEY_FILE}"}}
+JSON
+
+(cd "${app_directory}" && SLACK_TRIGGER=off PORT="${port}" exec "${bin}/server") >"${artifacts}/application.log" 2>&1 &
+app_pid=$!
+app_ready() { curl --fail --silent "${app_url}/api/health" >/dev/null && [[ -s "${E2E_UNSUBSCRIBE_KEY_FILE}" ]]; }
+wait_for 60 "${app_pid}" "the application at ${app_url}" app_ready
+
+"${bin}/e2eseed" -fake-url "${fake_url}" -out "${E2E_SEED_FILE}" -blob-cache-dir "${artifacts}/seed-blobs" >"${artifacts}/seed.log" 2>&1
+tail -n 1 "${artifacts}/seed.log"
+
+E2E_BASE_URL="${app_url}" npm --prefix web run test:e2e

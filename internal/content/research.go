@@ -241,6 +241,7 @@ func truncateRunes(text string, limit int) string {
 	if utf8.RuneCountInString(text) <= limit {
 		return text
 	}
+	// The ellipsis counts toward limit, so a truncated field still passes the editor's same bound.
 	runes := []rune(text)
-	return strings.TrimSpace(string(runes[:limit])) + "…"
+	return strings.TrimSpace(string(runes[:limit-1])) + "…"
 }

@@ -1019,7 +1019,11 @@ func (step EnterReview) Execute(ctx dex.Context, _ dex.None) (*dex.StepDecision,
 	if err != nil {
 		return nil, err
 	}
-	message := content.SlackReviewMessage(draft, newsletter, summary, link, step.flow.runLink(ctx), round+1)
+	version, err := draftVersion.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	message := content.SlackReviewMessage(draft, newsletter, summary, link, step.flow.runLink(ctx), version)
 	return dex.GoToMany(
 		dex.MovementOf(sdkgo.StepRef[SlackNotice](stepPostSlackNotice), noticeFor(request, message)),
 		dex.MovementOf(AwaitEditorDecision{}, nil),
@@ -1067,7 +1071,7 @@ func (step ApplyDraftEdits) Execute(ctx dex.Context, saved DraftEditsSaved) (*de
 	if err != nil {
 		return nil, err
 	}
-	message := fmt.Sprintf("The draft was edited in the editor (version %d): *%s*\nReply `approve` to send this version, `reject` to stop, or feedback to revise it. Editor: %s", saved.Version, draft.Title, link)
+	message := fmt.Sprintf("Draft %d, edited in the editor: *%s*\nReply `approve` to send this version, `reject` to stop, or feedback to revise it. Editor: %s", saved.Version, content.SlackText(draft.Title), link)
 	return dex.GoTo(sdkgo.StepRef[SlackNotice](stepPostSlackNotice), noticeFor(request, message)), nil
 }
 
@@ -1646,7 +1650,7 @@ func (flow *Flow) ApproveEditedDraft(ctx dex.Context, input ApproveEditedDraftIn
 	if err != nil {
 		return nil, err
 	}
-	notice := noticeFor(request, fmt.Sprintf("Approved in the editor (version %d). Sending the newsletter.", version))
+	notice := noticeFor(request, fmt.Sprintf("Draft %d approved in the editor. Sending the newsletter.", version))
 	return &dex.RPCResult[DraftEditResult]{
 		Output:    DraftEditResult{Outcome: OutcomeApproved, DraftVersion: version},
 		NextSteps: []dex.StepMovement{dex.MovementOf(sdkgo.StepRef[SlackNotice](stepPostSlackNotice), notice)},
@@ -1701,6 +1705,8 @@ func (flow *Flow) ReceiveSlackReview(ctx dex.Context, reply SlackReviewReply) (*
 	case status == StatusAwaitingReview && feedback != "":
 		decision, next, outcome = &ReviewDecision{Kind: decisionRevise, Round: round, Notes: feedback}, StatusWriting, OutcomeRevising
 		acknowledgement = "Thanks " + reviewer + ". Revising the draft with your feedback; the new version will appear in this thread."
+	case status == StatusAwaitingReview:
+		acknowledgement = "Reply `approve` to send this draft, `reject` to stop, or write your feedback to revise it."
 	case status == StatusNeedsAttention:
 		reason, err := attentionReason.Get(ctx)
 		if err != nil {

@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/mail"
@@ -38,10 +39,20 @@ type Providers struct {
 
 // SentEmail is one message the fake Gmail accepted.
 type SentEmail struct {
-	To      string
-	Subject string
-	Text    string
-	HTML    string
+	To      string `json:"to"`
+	Subject string `json:"subject"`
+	Text    string `json:"text"`
+	HTML    string `json:"html"`
+}
+
+// StatePath answers GET with State, so a test in another process can wait for provider effects.
+const StatePath = "/__test/state"
+
+// State is the JSON body served at StatePath.
+type State struct {
+	SlackPosts    []string    `json:"slackPosts"`
+	Emails        []SentEmail `json:"emails"`
+	ModelRequests int         `json:"modelRequests"`
 }
 
 // New starts the fake on a free loopback port; call Close when done.
@@ -49,6 +60,20 @@ func New() *Providers {
 	fake := &Providers{rejectSendTo: map[string]int{}, now: time.Now().UTC()}
 	fake.Server = httptest.NewServer(http.HandlerFunc(fake.serve))
 	return fake
+}
+
+// Start serves the fake on address, such as 127.0.0.1:0 for a free port; call Close when done.
+func Start(address string) (*Providers, error) {
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return nil, fmt.Errorf("listen on %s: %w", address, err)
+	}
+	fake := &Providers{rejectSendTo: map[string]int{}, now: time.Now().UTC()}
+	fake.Server = httptest.NewUnstartedServer(http.HandlerFunc(fake.serve))
+	_ = fake.Server.Listener.Close()
+	fake.Server.Listener = listener
+	fake.Server.Start()
+	return fake, nil
 }
 
 // FailBlogWriting rejects the next count blog-writing generations with HTTP 400.
@@ -68,6 +93,9 @@ func (fake *Providers) RejectSendTo(address string, count int) {
 func (fake *Providers) serve(response http.ResponseWriter, request *http.Request) {
 	path := request.URL.Path
 	switch {
+	case path == StatePath && request.Method == http.MethodGet:
+		slackPosts, emails, llmRequests := fake.Snapshot()
+		writeJSON(response, State{SlackPosts: append([]string{}, slackPosts...), Emails: append([]SentEmail{}, emails...), ModelRequests: len(llmRequests)})
 	case path == "/slack/chat.postMessage":
 		fake.serveSlack(response, request)
 	case strings.HasPrefix(path, "/github/"):

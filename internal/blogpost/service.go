@@ -87,9 +87,13 @@ func (service *EditorService) reconcile(ctx context.Context, flowID string, resu
 	return DraftEditResult{Outcome: OutcomeNotInReview, DraftVersion: view.DraftVersion, Message: "This draft is " + view.Status + ", so it can no longer be changed."}, nil
 }
 
+// knownRunError maps a missing run to ErrUnknownRun. The Client reports it as not found or, for
+// every RPC, as not active; a read-only RPC still answers for a completed run, so on the view
+// and preview paths either error means the run does not exist.
 func knownRunError(err error) error {
 	var missing *dex.FlowNotFoundError
-	if errors.As(err, &missing) {
+	var inactive *dex.FlowNotActiveError
+	if errors.As(err, &missing) || errors.As(err, &inactive) {
 		return ErrUnknownRun
 	}
 	return err

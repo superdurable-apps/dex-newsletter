@@ -63,7 +63,7 @@ func ValidateEditedBlog(edited, original BlogDraft) (BlogDraft, error) {
 		highlight.Description = collapseSpace(highlight.Description)
 		highlight.URL = strings.TrimSpace(highlight.URL)
 		if highlight.URL != "" && !links[highlight.URL] {
-			problems = append(problems, fmt.Errorf("%s links to a page that is not in the research", name))
+			problems = append(problems, fmt.Errorf("%s links to a page the draft did not cite; keep its original link", name))
 		}
 		if highlight.Title == "" {
 			if highlight.Description != "" {
@@ -141,10 +141,11 @@ func nonEmpty(texts []string) []string {
 const maxSlackDraftRunes = 30000
 
 // SlackReviewMessage is the review post: the blog and newsletter as plain text, then how to respond.
-func SlackReviewMessage(blog BlogDraft, newsletterText, summary, editorURL, dexWebURL string, round int64) string {
+// Model text is escaped, so research text can never mention the channel or disguise a link.
+func SlackReviewMessage(blog BlogDraft, newsletterText, summary, editorURL, dexWebURL string, version int64) string {
 	var message strings.Builder
-	fmt.Fprintf(&message, "*Draft %d ready for review*: %s\nBased on %s.\n\n", round, blog.Title, summary)
-	body := slackBlogText(blog) + "\n\n*Newsletter email*\n" + newsletterText
+	fmt.Fprintf(&message, "*Draft %d ready for review*: %s\nBased on %s.\n\n", version, SlackText(blog.Title), SlackText(summary))
+	body := slackBlogText(blog) + "\n\n*Newsletter email*\n" + SlackText(newsletterText)
 	if runes := []rune(body); len(runes) > maxSlackDraftRunes {
 		body = string(runes[:maxSlackDraftRunes]) + "\n… (cut to fit Slack; the editor has the full draft)"
 	}
@@ -156,39 +157,45 @@ func SlackReviewMessage(blog BlogDraft, newsletterText, summary, editorURL, dexW
 
 func slackBlogText(draft BlogDraft) string {
 	var text strings.Builder
-	fmt.Fprintf(&text, "*%s*\n", draft.Title)
+	fmt.Fprintf(&text, "*%s*\n", SlackText(draft.Title))
 	if draft.Subtitle != "" {
-		fmt.Fprintf(&text, "_%s_\n", draft.Subtitle)
+		fmt.Fprintf(&text, "_%s_\n", SlackText(draft.Subtitle))
 	}
 	if draft.Summary != "" {
-		fmt.Fprintf(&text, "\n%s\n", draft.Summary)
+		fmt.Fprintf(&text, "\n%s\n", SlackText(draft.Summary))
 	}
 	for _, section := range draft.Sections {
-		fmt.Fprintf(&text, "\n*%s*\n", section.Heading)
+		fmt.Fprintf(&text, "\n*%s*\n", SlackText(section.Heading))
 		for _, paragraph := range section.Paragraphs {
-			fmt.Fprintf(&text, "%s\n", paragraph)
+			fmt.Fprintf(&text, "%s\n", SlackText(paragraph))
 		}
 		for _, bullet := range section.Bullets {
-			fmt.Fprintf(&text, "• %s\n", bullet)
+			fmt.Fprintf(&text, "• %s\n", SlackText(bullet))
 		}
 	}
 	if len(draft.Highlights) > 0 {
 		text.WriteString("\n*Highlights*\n")
 		for _, highlight := range draft.Highlights {
 			if highlight.URL != "" {
-				fmt.Fprintf(&text, "• <%s|%s>: %s\n", highlight.URL, slackEscape(highlight.Title), highlight.Description)
+				fmt.Fprintf(&text, "• <%s|%s>: %s\n", highlight.URL, slackEscape(highlight.Title), SlackText(highlight.Description))
 			} else {
-				fmt.Fprintf(&text, "• %s: %s\n", highlight.Title, highlight.Description)
+				fmt.Fprintf(&text, "• %s: %s\n", SlackText(highlight.Title), SlackText(highlight.Description))
 			}
 		}
 	}
 	if draft.Closing != "" {
-		fmt.Fprintf(&text, "\n%s\n", draft.Closing)
+		fmt.Fprintf(&text, "\n%s\n", SlackText(draft.Closing))
 	}
 	return strings.TrimRight(text.String(), "\n")
 }
 
-// slackEscape keeps link labels from closing Slack's <url|label> syntax.
+// SlackText escapes the three characters Slack's mrkdwn gives meaning to, so text cannot
+// become a mention, a channel broadcast, or a link.
+func SlackText(text string) string {
+	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(text)
+}
+
+// slackEscape also keeps link labels from closing Slack's <url|label> syntax.
 func slackEscape(text string) string {
-	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "|", "¦").Replace(text)
+	return strings.ReplaceAll(SlackText(text), "|", "¦")
 }
