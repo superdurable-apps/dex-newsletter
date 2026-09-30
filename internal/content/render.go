@@ -88,61 +88,69 @@ func RenderBlogHTML(page BlogPage) (string, error) {
 	return buffer.String(), nil
 }
 
-// NewsletterEmail is the context of one recipient's email.
-type NewsletterEmail struct {
-	Draft           NewsletterDraft
+// Email is one recipient's copy of the post: the same content as the blog, in email formatting.
+type Email struct {
+	Draft           BlogDraft
 	PublicationName string
+	Window          Window
 	PostURL         string
 	UnsubscribeURL  string
 }
 
-var newsletterTemplate = template.Must(template.New("newsletter").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{.Draft.Subject}}</title></head>
+// EmailSubject is the subject line of the post's email: the post title.
+func EmailSubject(draft BlogDraft) string { return draft.Title }
+
+var emailTemplate = template.Must(template.New("email").Funcs(template.FuncMap{"rich": richText}).Parse(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{.Draft.Title}}</title></head>
 <body style="margin:0;background:#f6f7f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#16181d">
-<span style="display:none;max-height:0;overflow:hidden">{{.Draft.Preheader}}</span>
+{{if .Draft.Subtitle}}<span style="display:none;max-height:0;overflow:hidden">{{.Draft.Subtitle}}</span>{{end}}
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:32px 12px">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background:#ffffff;border:1px solid #e4e6eb;border-radius:10px">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:640px;background:#ffffff;border:1px solid #e4e6eb;border-radius:10px">
 <tr><td style="padding:32px 32px 8px">
 <div style="color:#3b5bdb;font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase">{{.PublicationName}}</div>
-<h1 style="font-size:26px;line-height:1.25;margin:10px 0 12px">{{.Draft.Subject}}</h1>
-<p style="font-size:16px;line-height:1.6;margin:0 0 8px">{{.Draft.Intro}}</p>
+<h1 style="font-size:26px;line-height:1.25;margin:10px 0 8px">{{.Draft.Title}}</h1>
+{{if .Draft.Subtitle}}<p style="font-size:17px;line-height:1.5;color:#5c6370;margin:0 0 8px">{{.Draft.Subtitle}}</p>{{end}}
+<p style="font-size:13px;color:#8a909b;margin:0 0 16px">Changes from {{.Window.Label}}</p>
+{{if .Draft.Summary}}<p style="font-size:16px;line-height:1.6;margin:0 0 8px;padding:12px 16px;background:#f6f7f9;border-left:3px solid #3b5bdb">{{rich .Draft.Summary}}</p>{{end}}
 </td></tr>
-{{range .Draft.Items}}<tr><td style="padding:12px 32px">
-<div style="font-size:16px;font-weight:600">{{.Title}}</div>
-<div style="font-size:15px;line-height:1.55;color:#5c6370;margin-top:4px">{{.Summary}}</div>
+{{range .Draft.Sections}}<tr><td style="padding:8px 32px">
+<h2 style="font-size:19px;line-height:1.3;margin:16px 0 8px">{{.Heading}}</h2>
+{{range .Paragraphs}}<p style="font-size:16px;line-height:1.6;margin:0 0 12px">{{rich .}}</p>
+{{end}}{{if .Bullets}}<ul style="font-size:16px;line-height:1.6;margin:0 0 12px;padding-left:22px">{{range .Bullets}}<li>{{rich .}}</li>{{end}}</ul>{{end}}
 </td></tr>
-{{end}}<tr><td style="padding:16px 32px 32px">
-{{if .Draft.Closing}}<p style="font-size:16px;line-height:1.6;margin:0 0 16px">{{.Draft.Closing}}</p>{{end}}
-{{if .PostURL}}<a href="{{.PostURL}}" style="display:inline-block;background:#3b5bdb;color:#ffffff;text-decoration:none;font-weight:600;padding:10px 18px;border-radius:6px">Read the full post</a>{{end}}
+{{end}}{{if .Draft.Highlights}}<tr><td style="padding:8px 32px">
+<h2 style="font-size:19px;line-height:1.3;margin:16px 0 8px">Highlights</h2>
+{{range .Draft.Highlights}}<div style="border:1px solid #e4e6eb;border-radius:8px;padding:12px 14px;margin:0 0 10px">
+<div style="font-size:16px;font-weight:600">{{if .URL}}<a href="{{.URL}}" style="color:#3b5bdb">{{.Title}}</a>{{else}}{{.Title}}{{end}}</div>
+{{if .Description}}<div style="font-size:15px;line-height:1.55;color:#5c6370;margin-top:4px">{{rich .Description}}</div>{{end}}
+</div>{{end}}
+</td></tr>
+{{end}}<tr><td style="padding:8px 32px 32px">
+{{if .Draft.Closing}}<p style="font-size:16px;line-height:1.6;margin:0 0 16px">{{rich .Draft.Closing}}</p>{{end}}
+{{if .PostURL}}<a href="{{.PostURL}}" style="display:inline-block;background:#3b5bdb;color:#ffffff;text-decoration:none;font-weight:600;padding:10px 18px;border-radius:6px">Read it on the blog</a>{{end}}
 </td></tr></table>
 <p style="font-size:12px;color:#8a909b;margin:16px 0 0">You receive this because you subscribed to {{.PublicationName}}. <a href="{{.UnsubscribeURL}}" style="color:#8a909b">Unsubscribe</a></p>
 </td></tr></table>
 </body></html>
 `))
 
-// RenderNewsletterHTML returns one recipient's HTML body.
-func RenderNewsletterHTML(email NewsletterEmail) (string, error) {
+// RenderEmailHTML renders the post as one recipient's HTML email.
+func RenderEmailHTML(email Email) (string, error) {
 	var buffer bytes.Buffer
-	if err := newsletterTemplate.Execute(&buffer, email); err != nil {
-		return "", fmt.Errorf("render newsletter HTML: %w", err)
+	if err := emailTemplate.Execute(&buffer, email); err != nil {
+		return "", fmt.Errorf("render email HTML: %w", err)
 	}
 	return buffer.String(), nil
 }
 
-// RenderNewsletterText returns the plain-text alternative, which Dex Web also shows as the preview.
-func RenderNewsletterText(email NewsletterEmail) string {
+// RenderEmailText is the plain-text alternative: the post's text, then the links.
+func RenderEmailText(email Email) string {
 	var text strings.Builder
-	fmt.Fprintf(&text, "%s\n\n%s\n\n", email.Draft.Subject, email.Draft.Intro)
-	for _, item := range email.Draft.Items {
-		fmt.Fprintf(&text, "* %s\n  %s\n\n", item.Title, item.Summary)
-	}
-	if email.Draft.Closing != "" {
-		fmt.Fprintf(&text, "%s\n\n", email.Draft.Closing)
-	}
+	text.WriteString(RenderBlogText(email.Draft))
 	if email.PostURL != "" {
-		fmt.Fprintf(&text, "Read the full post: %s\n\n", email.PostURL)
+		fmt.Fprintf(&text, "\nRead it on the blog: %s\n", email.PostURL)
 	}
-	fmt.Fprintf(&text, "--\nYou receive this because you subscribed to %s.\nUnsubscribe: %s\n", email.PublicationName, email.UnsubscribeURL)
+	fmt.Fprintf(&text, "\n--\nYou receive this because you subscribed to %s.\nUnsubscribe: %s\n", email.PublicationName, email.UnsubscribeURL)
 	return text.String()
 }
 

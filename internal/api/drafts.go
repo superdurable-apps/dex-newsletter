@@ -12,7 +12,7 @@ import (
 // Drafts is the pre-publish editor boundary.
 type Drafts interface {
 	Get(ctx context.Context, flowID, token string) (blogpost.EditableDraft, error)
-	Preview(ctx context.Context, flowID, token string, blog content.BlogDraft, newsletter content.NewsletterDraft) (blogpost.DraftPreview, error)
+	Preview(ctx context.Context, flowID, token string, blog content.BlogDraft) (blogpost.DraftPreview, error)
 	Save(ctx context.Context, flowID, token string, input blogpost.SaveDraftEditsInput) (blogpost.DraftEditResult, error)
 	Approve(ctx context.Context, flowID, token string, baseVersion int64) (blogpost.DraftEditResult, error)
 }
@@ -41,10 +41,10 @@ func (handler *Handler) GetDraft(ctx context.Context, params generated.GetDraftP
 }
 
 func (handler *Handler) PreviewDraft(ctx context.Context, request *generated.DraftPreviewRequest, params generated.PreviewDraftParams) (generated.PreviewDraftRes, error) {
-	preview, err := handler.drafts.Preview(ctx, params.RunId, request.Token, blogDraft(request.Blog), newsletterDraft(request.Newsletter))
+	preview, err := handler.drafts.Preview(ctx, params.RunId, request.Token, blogDraft(request.Blog))
 	switch {
 	case err == nil:
-		response := &generated.DraftPreview{Valid: preview.Valid, BlogHtml: preview.BlogHTML, NewsletterHtml: preview.NewsletterHTML}
+		response := &generated.DraftPreview{Valid: preview.Valid, BlogHtml: preview.BlogHTML, EmailSubject: preview.EmailSubject, EmailHtml: preview.EmailHTML}
 		if preview.Message != "" {
 			response.Message = generated.NewOptString(preview.Message)
 		}
@@ -63,7 +63,7 @@ func (handler *Handler) PreviewDraft(ctx context.Context, request *generated.Dra
 
 func (handler *Handler) SaveDraft(ctx context.Context, request *generated.DraftSaveRequest, params generated.SaveDraftParams) (generated.SaveDraftRes, error) {
 	result, err := handler.drafts.Save(ctx, params.RunId, request.Token, blogpost.SaveDraftEditsInput{
-		BaseVersion: request.BaseVersion, Blog: blogDraft(request.Blog), Newsletter: newsletterDraft(request.Newsletter),
+		BaseVersion: request.BaseVersion, Blog: blogDraft(request.Blog),
 	})
 	switch {
 	case err == nil && result.Outcome == blogpost.OutcomeSaved:
@@ -109,8 +109,7 @@ func (handler *Handler) ApproveDraft(ctx context.Context, request *generated.Dra
 func editorView(runID string, view blogpost.EditableDraft) *generated.DraftEditorView {
 	return &generated.DraftEditorView{
 		RunId: runID, Status: view.Status, Editable: view.Editable, DraftVersion: view.DraftVersion, RevisionCount: view.RevisionCount,
-		Blog: generatedBlogDraft(view.Blog), Newsletter: generatedNewsletterDraft(view.Newsletter),
-		BlogHtml: view.BlogHTML, NewsletterHtml: view.NewsletterHTML,
+		Blog: generatedBlogDraft(view.Blog), BlogHtml: view.BlogHTML, EmailSubject: view.EmailSubject, EmailHtml: view.EmailHTML,
 	}
 }
 
@@ -135,22 +134,6 @@ func generatedBlogDraft(draft content.BlogDraft) generated.BlogDraft {
 	}
 	for _, highlight := range draft.Highlights {
 		converted.Highlights = append(converted.Highlights, generated.BlogHighlight{Title: highlight.Title, Description: highlight.Description, URL: highlight.URL})
-	}
-	return converted
-}
-
-func newsletterDraft(draft generated.NewsletterDraft) content.NewsletterDraft {
-	converted := content.NewsletterDraft{Subject: draft.Subject, Preheader: draft.Preheader, Intro: draft.Intro, Closing: draft.Closing}
-	for _, item := range draft.Items {
-		converted.Items = append(converted.Items, content.NewsletterItem{Title: item.Title, Summary: item.Summary})
-	}
-	return converted
-}
-
-func generatedNewsletterDraft(draft content.NewsletterDraft) generated.NewsletterDraft {
-	converted := generated.NewsletterDraft{Subject: draft.Subject, Preheader: draft.Preheader, Intro: draft.Intro, Closing: draft.Closing, Items: []generated.NewsletterItem{}}
-	for _, item := range draft.Items {
-		converted.Items = append(converted.Items, generated.NewsletterItem{Title: item.Title, Summary: item.Summary})
 	}
 	return converted
 }

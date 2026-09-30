@@ -40,12 +40,12 @@ func (service *EditorService) Get(ctx context.Context, flowID, token string) (Ed
 }
 
 // Preview renders unsaved edits.
-func (service *EditorService) Preview(ctx context.Context, flowID, token string, blog content.BlogDraft, newsletter content.NewsletterDraft) (DraftPreview, error) {
+func (service *EditorService) Preview(ctx context.Context, flowID, token string, blog content.BlogDraft) (DraftPreview, error) {
 	if !service.links.Verify(flowID, token) {
 		return DraftPreview{}, ErrInvalidEditorLink
 	}
 	var preview DraftPreview
-	input := PreviewDraftEditsInput{Blog: blog, Newsletter: newsletter}
+	input := PreviewDraftEditsInput{Blog: blog}
 	if err := service.client.InvokeRPC(ctx, flowID, service.flow.PreviewDraftEdits, input, &preview); err != nil {
 		return DraftPreview{}, knownRunError(err)
 	}

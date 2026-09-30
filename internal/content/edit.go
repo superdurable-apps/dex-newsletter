@@ -7,6 +7,7 @@ import (
 )
 
 // Editor limits match the model-draft bounds, so an edited draft renders like a generated one.
+// The blog post is the only document: the email is the same post in email formatting.
 
 // ValidateEditedBlog bounds an editor's blog draft. The slug and every link stay as
 // they were in original: links must come from the research, and the slug names the post.
@@ -81,38 +82,6 @@ func ValidateEditedBlog(edited, original BlogDraft) (BlogDraft, error) {
 	return draft, nil
 }
 
-// ValidateEditedNewsletter bounds an editor's newsletter draft.
-func ValidateEditedNewsletter(edited NewsletterDraft) (NewsletterDraft, error) {
-	var problems []error
-	draft := NewsletterDraft{
-		Subject: collapseSpace(edited.Subject), Preheader: collapseSpace(edited.Preheader),
-		Intro: strings.TrimSpace(edited.Intro), Closing: strings.TrimSpace(edited.Closing),
-	}
-	problems = append(problems, runeLimit("Subject", draft.Subject, 120), runeLimit("Preheader", draft.Preheader, 200),
-		runeLimit("Intro", draft.Intro, 1200), runeLimit("Closing", draft.Closing, 600))
-	if draft.Subject == "" {
-		problems = append(problems, errors.New("Subject is required"))
-	}
-	for index, item := range edited.Items {
-		name := fmt.Sprintf("Item %d", index+1)
-		item.Title = collapseSpace(item.Title)
-		item.Summary = collapseSpace(item.Summary)
-		if item.Title == "" && item.Summary == "" {
-			continue
-		}
-		if item.Title == "" {
-			problems = append(problems, fmt.Errorf("%s needs a title", name))
-		}
-		problems = append(problems, runeLimit(name+" title", item.Title, 160), runeLimit(name+" summary", item.Summary, 600))
-		draft.Items = append(draft.Items, item)
-	}
-	problems = append(problems, countLimit("Items", len(draft.Items), 8))
-	if err := errors.Join(problems...); err != nil {
-		return NewsletterDraft{}, err
-	}
-	return draft, nil
-}
-
 func runeLimit(name, text string, limit int) error {
 	count := len([]rune(text))
 	// Drafts written before truncation counted its ellipsis may hold limit+1 runes ending in one.
@@ -145,22 +114,19 @@ func nonEmpty(texts []string) []string {
 // maxSlackDraftRunes keeps the review post well inside Slack's 40,000-character message limit.
 const maxSlackDraftRunes = 30000
 
-// SlackReviewMessage is the review post: the blog and newsletter as plain text, then how to respond.
-// Model text is escaped, so research text can never mention the channel or disguise a link.
+// SlackReviewMessage is the review post: the draft as plain text, then how to respond. The email
+// carries the same content, so the draft appears once.
 // heading is the already-escaped first line, such as "*Draft 2 ready for review*: <title>".
-func SlackReviewMessage(heading string, blog BlogDraft, newsletterText, summary, editorURL, dexWebURL string) string {
+// Model text is escaped, so research text can never mention the channel or disguise a link.
+func SlackReviewMessage(heading string, blog BlogDraft, summary, editorURL, dexWebURL string) string {
 	var message strings.Builder
-	fmt.Fprintf(&message, "%s\nBased on %s.\n\n", heading, SlackText(summary))
-	// The email always fits whole; only the blog text is cut, since approval sends the email.
-	email := "\n\n*Newsletter email*\n" + SlackText(newsletterText)
-	if runes := []rune(email); len(runes) > maxSlackDraftRunes/2 {
-		email = string(runes[:maxSlackDraftRunes/2]) + "\n… (cut to fit Slack; the editor has the full email)"
-	}
+	fmt.Fprintf(&message, "%s\nBased on %s. The email sends this same post, with the subject line \"%s\".\n\n",
+		heading, SlackText(summary), SlackText(EmailSubject(blog)))
 	blogText := slackBlogText(blog)
-	if budget := maxSlackDraftRunes - len([]rune(email)); len([]rune(blogText)) > budget {
-		blogText = string([]rune(blogText)[:budget]) + "\n… (cut to fit Slack; the editor has the full post)"
+	if runes := []rune(blogText); len(runes) > maxSlackDraftRunes {
+		blogText = string(runes[:maxSlackDraftRunes]) + "\n… (cut to fit Slack; the editor has the full post)"
 	}
-	message.WriteString(blogText + email)
+	message.WriteString(blogText)
 	fmt.Fprintf(&message, "\n\n*Reply in this thread* with `approve` to send it, `reject` to stop, or any feedback to get a revised draft.\n"+
 		"Edit the text directly and approve in the editor: %s\nDex Web: %s", editorURL, dexWebURL)
 	return message.String()

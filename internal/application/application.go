@@ -187,8 +187,7 @@ func loadModels(store *localconfig.Store) (blogpost.Models, error) {
 		picks[stepType] = loaded.Value.Model
 	}
 	return blogpost.Models{
-		Interpret: picks[blogpost.ModelStepTypes[0]], Choose: picks[blogpost.ModelStepTypes[1]],
-		WriteBlog: picks[blogpost.ModelStepTypes[2]], WriteNewsletter: picks[blogpost.ModelStepTypes[3]],
+		Interpret: picks[blogpost.ModelStepTypes[0]], Choose: picks[blogpost.ModelStepTypes[1]], WriteBlog: picks[blogpost.ModelStepTypes[2]],
 	}, nil
 }
 
