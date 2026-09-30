@@ -142,8 +142,16 @@ emails, unsubscribe links, and the Dex Web removal Action.
 - Subscribing has no double opt-in or rate limit. Gmail's send API sets no
   `List-Unsubscribe` header.
 - The editor link is a signed capability link, posted in the Slack thread and
-  Dex Web: anyone who has it can edit and approve that run's draft. Put the
-  editor behind your SSO before exposing it beyond a trusted team.
+  Dex Web: anyone who has it can edit and approve that run's draft, and read it
+  after the run closes. Its key (`newsletter.editorKeyFile`) is separate from the
+  unsubscribe key, so replacing it revokes every editor link without breaking
+  unsubscribe links. Put the editor behind your SSO before exposing it beyond a
+  trusted team.
+- A Slack `approve` counts only for the draft version last posted in full to the
+  thread, and only when sent after that post. Otherwise the reply gets an
+  explanation and nothing is sent.
+- The Slack reviewer list, like models and other connection settings, is read at
+  startup: restart the application after changing reviewers.
 - Slack feedback after manual edits asks the model to revise the edited blog and
   email, so the model may rephrase manual edits while applying the feedback.
 - The post is an HTML artifact; publishing it to a website is up to you

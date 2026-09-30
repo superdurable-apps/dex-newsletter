@@ -17,7 +17,8 @@
   },
   "newsletter": {
     "publicBaseUrl": "http://127.0.0.1:8844",
-    "unsubscribeKeyFile": ".dex-dev/unsubscribe.key"
+    "unsubscribeKeyFile": ".dex-dev/unsubscribe.key",
+    "editorKeyFile": ".dex-dev/editor.key"
   },
   "dexWebUrl": "http://127.0.0.1:8842"
 }

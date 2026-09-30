@@ -55,8 +55,8 @@ func newHarness(t *testing.T) *harness {
 		"github": {"owners": ["acme"]},
 		"dexWebUrl": "http://127.0.0.1:8842",
 		"blog": {"artifactDirectory": %q, "postUrlTemplate": "https://blog.acme.test/{slug}", "publicationName": "Acme Engineering"},
-		"newsletter": {"publicBaseUrl": "https://news.acme.test", "unsubscribeKeyFile": %q}
-	}`, filepath.Join(directory, "artifacts"), filepath.Join(directory, "unsubscribe.key"))))
+		"newsletter": {"publicBaseUrl": "https://news.acme.test", "unsubscribeKeyFile": %q, "editorKeyFile": %q}
+	}`, filepath.Join(directory, "artifacts"), filepath.Join(directory, "unsubscribe.key"), filepath.Join(directory, "editor.key"))))
 	if err != nil {
 		t.Fatal(err)
 	}

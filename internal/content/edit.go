@@ -114,7 +114,12 @@ func ValidateEditedNewsletter(edited NewsletterDraft) (NewsletterDraft, error) {
 }
 
 func runeLimit(name, text string, limit int) error {
-	if count := len([]rune(text)); count > limit {
+	count := len([]rune(text))
+	// Drafts written before truncation counted its ellipsis may hold limit+1 runes ending in one.
+	if count == limit+1 && strings.HasSuffix(text, "…") {
+		return nil
+	}
+	if count > limit {
 		return fmt.Errorf("%s has %d characters; keep it to %d", name, count, limit)
 	}
 	return nil
@@ -146,11 +151,16 @@ const maxSlackDraftRunes = 30000
 func SlackReviewMessage(heading string, blog BlogDraft, newsletterText, summary, editorURL, dexWebURL string) string {
 	var message strings.Builder
 	fmt.Fprintf(&message, "%s\nBased on %s.\n\n", heading, SlackText(summary))
-	body := slackBlogText(blog) + "\n\n*Newsletter email*\n" + SlackText(newsletterText)
-	if runes := []rune(body); len(runes) > maxSlackDraftRunes {
-		body = string(runes[:maxSlackDraftRunes]) + "\n… (cut to fit Slack; the editor has the full draft)"
+	// The email always fits whole; only the blog text is cut, since approval sends the email.
+	email := "\n\n*Newsletter email*\n" + SlackText(newsletterText)
+	if runes := []rune(email); len(runes) > maxSlackDraftRunes/2 {
+		email = string(runes[:maxSlackDraftRunes/2]) + "\n… (cut to fit Slack; the editor has the full email)"
 	}
-	message.WriteString(body)
+	blogText := slackBlogText(blog)
+	if budget := maxSlackDraftRunes - len([]rune(email)); len([]rune(blogText)) > budget {
+		blogText = string([]rune(blogText)[:budget]) + "\n… (cut to fit Slack; the editor has the full post)"
+	}
+	message.WriteString(blogText + email)
 	fmt.Fprintf(&message, "\n\n*Reply in this thread* with `approve` to send it, `reject` to stop, or any feedback to get a revised draft.\n"+
 		"Edit the text directly and approve in the editor: %s\nDex Web: %s", editorURL, dexWebURL)
 	return message.String()

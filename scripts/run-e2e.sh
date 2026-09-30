@@ -61,10 +61,11 @@ export E2E_SEED_FILE="${artifacts}/editor-seed.json"
 cat >"${BLOG_NEWSLETTER_CONFIG}" <<JSON
 {"github":{"owners":["acme"]},"dexWebUrl":"https://dex-web.acme.test",
  "blog":{"artifactDirectory":"${artifacts}/blog"},
- "newsletter":{"publicBaseUrl":"${app_url}","unsubscribeKeyFile":"${E2E_UNSUBSCRIBE_KEY_FILE}"}}
+ "newsletter":{"publicBaseUrl":"${app_url}","unsubscribeKeyFile":"${E2E_UNSUBSCRIBE_KEY_FILE}","editorKeyFile":"${artifacts}/editor.key"}}
 JSON
 
-(cd "${app_directory}" && SLACK_TRIGGER=off PORT="${port}" exec "${bin}/server") >"${artifacts}/application.log" 2>&1 &
+# The application's model calls go to the fake too, so a journey that should not generate can prove it.
+(cd "${app_directory}" && SLACK_TRIGGER=off BLOG_NEWSLETTER_TEST_GEMINI_BASE_URL="${fake_url}" PORT="${port}" exec "${bin}/server") >"${artifacts}/application.log" 2>&1 &
 app_pid=$!
 app_ready() { curl --fail --silent "${app_url}/api/health" >/dev/null && [[ -s "${E2E_UNSUBSCRIBE_KEY_FILE}" ]]; }
 wait_for 60 "${app_pid}" "the application at ${app_url}" app_ready
