@@ -37,18 +37,14 @@ function draftView(overrides: Partial<DraftEditorView> = {}): DraftEditorView {
       highlights: [{ title: 'Retry PR', description: 'Adds retries.', url: highlightUrl }],
       closing: 'Thanks for reading.',
     },
-    newsletter: {
-      subject: 'Connectors got faster',
-      preheader: 'Retries and paging',
-      intro: 'Hello readers.',
-      items: [{ title: 'Retries', summary: 'Now automatic.' }],
-      closing: 'See you next week.',
-    },
     blogHtml: '<h1>Blog v3</h1>',
-    newsletterHtml: '<h1>Email v3</h1>',
+    emailSubject: 'Connectors got faster',
+    emailHtml: '<h1>Email v3</h1>',
     ...overrides,
   };
 }
+
+const samePostNote = 'The email sends this same post to subscribers; only the formatting differs.';
 
 function conflict(code: string, message: string) {
   return { error: { error: code, message }, response: { status: 409 } };
@@ -70,6 +66,11 @@ function textbox(name: string) {
 
 async function loaded() {
   return screen.findByRole('textbox', { name: 'Title' });
+}
+
+// Request bodies carry only the post: the email is rendered from it, never edited separately.
+function bodyKeys(call: unknown[]) {
+  return Object.keys((call[0] as { body: object }).body).sort();
 }
 
 // Lets resolved client promises and the React updates they trigger settle while timers are fake.
@@ -110,42 +111,64 @@ describe('Editor', () => {
     expect(screen.getByRole('link', { name: highlightUrl })).toHaveAttribute('href', highlightUrl);
     expect(screen.queryByRole('textbox', { name: highlightUrl })).not.toBeInTheDocument();
     expect(textbox('Closing')).toHaveValue('Thanks for reading.');
+    expect(screen.getByRole('form', { name: 'Edit post' })).toBeInTheDocument();
+    // Title, subtitle, summary, the section's three fields, the highlight's two, and the closing: nothing else.
+    expect(screen.getAllByRole('textbox')).toHaveLength(9);
     expect(screen.getByRole('heading', { name: 'Preview (as published)' })).toBeInTheDocument();
+    expect(screen.getByText(samePostNote)).toBeInTheDocument();
     const preview = screen.getByTitle('Blog post preview');
     expect(preview).toHaveAttribute('srcdoc', '<h1>Blog v3</h1>');
     expect(preview).toHaveAttribute('sandbox', '');
+    expect(screen.queryByText(/^Subject:/)).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Blog post' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('link', { name: 'Email' })).not.toHaveAttribute('aria-current');
     expect(screen.getByRole('link', { name: 'Open in Dex Web' })).toHaveAttribute('href', `http://127.0.0.1:8842/v2/run/BlogPost/${runId}`);
     expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Approve and send' })).toBeEnabled();
   });
 
-  it('switches to the newsletter tab without losing unsaved blog edits', async () => {
+  it('switches only the preview between the blog post and the email, keeping the same form and its unsaved edits', async () => {
     api.getDraft.mockResolvedValue({ data: draftView() });
     renderEditor();
     fireEvent.change(await loaded(), { target: { value: 'Edited title' } });
+    const fields = screen.getAllByRole('textbox');
 
-    fireEvent.click(screen.getByRole('link', { name: 'Newsletter email' }));
-    expect(window.location.search).toBe(`?token=${token}&tab=newsletter`);
-    expect(screen.getByRole('link', { name: 'Newsletter email' })).toHaveAttribute('aria-current', 'page');
-    expect(textbox('Subject')).toHaveValue('Connectors got faster');
-    expect(textbox('Preheader')).toHaveValue('Retries and paging');
-    expect(textbox('Intro')).toHaveValue('Hello readers.');
-    expect(textbox('Item 1 Title')).toHaveValue('Retries');
-    expect(textbox('Item 1 Summary')).toHaveValue('Now automatic.');
-    expect(textbox('Closing')).toHaveValue('See you next week.');
+    fireEvent.click(screen.getByRole('link', { name: 'Email' }));
+    expect(window.location.search).toBe(`?token=${token}&tab=email`);
+    expect(screen.getByRole('link', { name: 'Email' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('link', { name: 'Blog post' })).not.toHaveAttribute('aria-current');
+    // The very same fields stay mounted: there is one post, and the email is only its other rendering.
+    const emailFields = screen.getAllByRole('textbox');
+    expect(emailFields).toHaveLength(fields.length);
+    emailFields.forEach((field, at) => expect(field).toBe(fields[at]));
+    expect(textbox('Title')).toHaveValue('Edited title');
+    expect(screen.getByRole('form', { name: 'Edit post' })).toBeInTheDocument();
+    for (const name of ['Subject', 'Preheader', 'Intro', 'Item 1 Title', 'Item 1 Summary']) {
+      expect(screen.queryByRole('textbox', { name })).not.toBeInTheDocument();
+    }
     expect(screen.getByRole('heading', { name: 'Preview (as emailed)' })).toBeInTheDocument();
-    expect(screen.getByTitle('Newsletter email preview')).toHaveAttribute('srcdoc', '<h1>Email v3</h1>');
+    expect(screen.getByText('Subject: Connectors got faster')).toBeInTheDocument();
+    expect(screen.getByTitle('Email preview')).toHaveAttribute('srcdoc', '<h1>Email v3</h1>');
+    expect(screen.getByTitle('Email preview')).toHaveAttribute('sandbox', '');
+    expect(screen.queryByTitle('Blog post preview')).not.toBeInTheDocument();
+    expect(screen.getAllByText(samePostNote)).toHaveLength(1);
 
     fireEvent.click(screen.getByRole('link', { name: 'Blog post' }));
+    expect(window.location.search).toBe(`?token=${token}&tab=blog`);
     expect(textbox('Title')).toHaveValue('Edited title');
+    expect(screen.getByRole('heading', { name: 'Preview (as published)' })).toBeInTheDocument();
+    expect(screen.getByTitle('Blog post preview')).toHaveAttribute('srcdoc', '<h1>Blog v3</h1>');
+    expect(screen.queryByText(/^Subject:/)).not.toBeInTheDocument();
   });
 
-  it('opens from the /edit/ route with the tab from the URL', async () => {
+  it.each(['email', 'newsletter'])('opens the email preview from the /edit/ route with ?tab=%s', async (tab) => {
     api.getDraft.mockResolvedValue({ data: draftView() });
-    window.history.replaceState({}, '', `/edit/${encodeURIComponent(runId)}?token=${token}&tab=newsletter`);
+    window.history.replaceState({}, '', `/edit/${encodeURIComponent(runId)}?token=${token}&tab=${tab}`);
     render(<App />);
-    expect(await screen.findByRole('textbox', { name: 'Subject' })).toHaveValue('Connectors got faster');
+    expect(await screen.findByText('Subject: Connectors got faster')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Email' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByTitle('Email preview')).toHaveAttribute('srcdoc', '<h1>Email v3</h1>');
+    expect(textbox('Title')).toHaveValue('Connectors got faster');
     expect(api.getDraft).toHaveBeenCalledWith({ path: { runId }, query: { token } });
   });
 
@@ -192,6 +215,8 @@ describe('Editor', () => {
       revisionCount: 2,
       blog: { ...draftView().blog, title: 'Connectors got much faster', sections: [{ heading: 'Retries', paragraphs: ['First.', 'Second.'], bullets: ['One', 'Two'] }] },
       blogHtml: '<h1>Blog v4</h1>',
+      emailSubject: 'Connectors got much faster',
+      emailHtml: '<h1>Email v4</h1>',
     });
     api.getDraft.mockResolvedValueOnce({ data: draftView() }).mockResolvedValueOnce({ data: saved });
     const save = deferred<unknown>();
@@ -210,9 +235,9 @@ describe('Editor', () => {
         token,
         baseVersion: 3,
         blog: saved.blog,
-        newsletter: draftView().newsletter,
       },
     });
+    expect(bodyKeys(api.saveDraft.mock.calls[0])).toEqual(['baseVersion', 'blog', 'token']);
 
     await act(async () => save.resolve({ data: { outcome: 'saved', draftVersion: 4 } }));
     expect(await screen.findByText('Saved (version 4)')).toHaveAttribute('role', 'status');
@@ -221,6 +246,10 @@ describe('Editor', () => {
     expect(textbox('Section 1 Paragraphs (blank line between paragraphs)')).toHaveValue('First.\n\nSecond.');
     expect(screen.getByTitle('Blog post preview')).toHaveAttribute('srcdoc', '<h1>Blog v4</h1>');
     expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+    // The reloaded version also replaced the email rendering and its subject.
+    fireEvent.click(screen.getByRole('link', { name: 'Email' }));
+    expect(screen.getByText('Subject: Connectors got much faster')).toBeInTheDocument();
+    expect(screen.getByTitle('Email preview')).toHaveAttribute('srcdoc', '<h1>Email v4</h1>');
 
     api.approveDraft.mockResolvedValue({ data: { outcome: 'approved', draftVersion: 4 } });
     fireEvent.click(screen.getByRole('button', { name: 'Approve and send' }));
@@ -348,6 +377,12 @@ describe('Editor', () => {
     expect(screen.queryByRole('button', { name: 'Approve and send' })).not.toBeInTheDocument();
     expect(screen.getByTitle('Blog post preview')).toHaveAttribute('srcdoc', '<h1>Blog v3</h1>');
     expect(screen.getByRole('link', { name: 'Open in Dex Web' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('link', { name: 'Email' }));
+    expect(screen.getByText('Subject: Connectors got faster')).toBeInTheDocument();
+    expect(screen.getByTitle('Email preview')).toHaveAttribute('srcdoc', '<h1>Email v3</h1>');
+    expect(textbox('Title')).toBeDisabled();
+    expect(api.previewDraft).not.toHaveBeenCalled();
   });
 
   it('debounces previews, ignores stale responses, and keeps the last good preview when invalid', async () => {
@@ -370,22 +405,23 @@ describe('Editor', () => {
     expect(api.previewDraft).toHaveBeenCalledTimes(1);
     expect(api.previewDraft).toHaveBeenLastCalledWith({
       path: { runId },
-      body: { token, blog: { ...draftView().blog, title: 'Draft B' }, newsletter: draftView().newsletter },
+      body: { token, blog: { ...draftView().blog, title: 'Draft B' } },
     });
+    expect(bodyKeys(api.previewDraft.mock.calls[0])).toEqual(['blog', 'token']);
 
     fireEvent.change(title, { target: { value: 'Draft C' } });
     act(() => { vi.advanceTimersByTime(PREVIEW_DELAY_MS); });
     expect(api.previewDraft).toHaveBeenCalledTimes(2);
 
-    second.resolve({ data: { valid: true, blogHtml: '<h1>Draft C</h1>', newsletterHtml: '<p>Email C</p>' } });
+    second.resolve({ data: { valid: true, blogHtml: '<h1>Draft C</h1>', emailSubject: 'Draft C', emailHtml: '<p>Email C</p>' } });
     await settle();
     expect(preview()).toHaveAttribute('srcdoc', '<h1>Draft C</h1>');
 
-    first.resolve({ data: { valid: true, blogHtml: '<h1>Draft B</h1>', newsletterHtml: '<p>Email B</p>' } });
+    first.resolve({ data: { valid: true, blogHtml: '<h1>Draft B</h1>', emailSubject: 'Draft B', emailHtml: '<p>Email B</p>' } });
     await settle();
     expect(preview()).toHaveAttribute('srcdoc', '<h1>Draft C</h1>');
 
-    api.previewDraft.mockResolvedValueOnce({ data: { valid: false, message: 'Title is required', blogHtml: '', newsletterHtml: '' } });
+    api.previewDraft.mockResolvedValueOnce({ data: { valid: false, message: 'Title is required', blogHtml: '', emailSubject: '', emailHtml: '' } });
     fireEvent.change(title, { target: { value: '' } });
     act(() => { vi.advanceTimersByTime(PREVIEW_DELAY_MS); });
     await settle();
@@ -397,5 +433,55 @@ describe('Editor', () => {
     expect(preview()).toHaveAttribute('srcdoc', '<h1>Blog v3</h1>');
     expect(screen.queryByText('Title is required')).not.toBeInTheDocument();
     expect(api.previewDraft).toHaveBeenCalledTimes(3);
+  });
+
+  it('updates the email subject and both previews from one preview of the edited post', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    api.getDraft.mockResolvedValue({ data: draftView() });
+    const rendered = deferred<unknown>();
+    api.previewDraft.mockReturnValueOnce(rendered.promise);
+    renderEditor(`?token=${token}&tab=email`);
+    await settle();
+    const emailPreview = () => screen.getByTitle('Email preview');
+    expect(screen.getByText('Subject: Connectors got faster')).toBeInTheDocument();
+    expect(emailPreview()).toHaveAttribute('srcdoc', '<h1>Email v3</h1>');
+
+    // The subject is the post's title, edited in the one form, and follows the server's rendering.
+    fireEvent.change(textbox('Title'), { target: { value: 'Connectors, edited for the inbox' } });
+    act(() => { vi.advanceTimersByTime(PREVIEW_DELAY_MS); });
+    expect(api.previewDraft).toHaveBeenCalledWith({
+      path: { runId },
+      body: { token, blog: { ...draftView().blog, title: 'Connectors, edited for the inbox' } },
+    });
+    expect(screen.getByText('Subject: Connectors got faster')).toBeInTheDocument();
+
+    rendered.resolve({ data: { valid: true, blogHtml: '<h1>Blog edited</h1>', emailSubject: 'Connectors, edited for the inbox', emailHtml: '<h1>Email edited</h1>' } });
+    await settle();
+    expect(screen.getByText('Subject: Connectors, edited for the inbox')).toBeInTheDocument();
+    expect(emailPreview()).toHaveAttribute('srcdoc', '<h1>Email edited</h1>');
+
+    // The same response already rendered the blog post; switching tabs asks the server for nothing.
+    fireEvent.click(screen.getByRole('link', { name: 'Blog post' }));
+    expect(screen.getByTitle('Blog post preview')).toHaveAttribute('srcdoc', '<h1>Blog edited</h1>');
+    fireEvent.click(screen.getByRole('link', { name: 'Email' }));
+    act(() => { vi.advanceTimersByTime(PREVIEW_DELAY_MS); });
+    await settle();
+    expect(api.previewDraft).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Subject: Connectors, edited for the inbox')).toBeInTheDocument();
+
+    api.previewDraft.mockResolvedValueOnce({ data: { valid: false, message: 'Title is required', blogHtml: '', emailSubject: '', emailHtml: '' } });
+    fireEvent.change(textbox('Title'), { target: { value: '' } });
+    act(() => { vi.advanceTimersByTime(PREVIEW_DELAY_MS); });
+    await settle();
+    expect(screen.getByText('Title is required')).toBeInTheDocument();
+    expect(screen.getByText('Subject: Connectors, edited for the inbox')).toBeInTheDocument();
+    expect(emailPreview()).toHaveAttribute('srcdoc', '<h1>Email edited</h1>');
+
+    fireEvent.change(textbox('Title'), { target: { value: 'Connectors got faster' } });
+    await settle();
+    expect(screen.getByText('Subject: Connectors got faster')).toBeInTheDocument();
+    expect(emailPreview()).toHaveAttribute('srcdoc', '<h1>Email v3</h1>');
+    expect(screen.queryByText('Title is required')).not.toBeInTheDocument();
+    expect(api.previewDraft).toHaveBeenCalledTimes(2);
   });
 });

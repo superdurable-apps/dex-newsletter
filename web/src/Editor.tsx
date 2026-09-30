@@ -1,8 +1,9 @@
 import { MouseEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { approveDraft, getDraft, previewDraft, saveDraft } from './api/generated/sdk.gen';
-import type { ApplicationInfo, BlogDraft, BlogHighlight, DraftEditorView, NewsletterDraft, NewsletterItem } from './api/generated/types.gen';
+import type { ApplicationInfo, BlogDraft, BlogHighlight, DraftEditorView } from './api/generated/types.gen';
 
-export type EditorTab = 'blog' | 'newsletter';
+// There is one post to edit; the tab only picks which rendering of it the preview shows.
+export type EditorTab = 'blog' | 'email';
 
 // Unsaved edits are rendered by the server this long after the last keystroke.
 export const PREVIEW_DELAY_MS = 500;
@@ -13,6 +14,7 @@ type Phase = 'loading' | 'ready' | 'invalid-link' | 'not-found' | 'failed';
 type Busy = 'saving' | 'approving' | 'reloading' | null;
 type Notice = { tone: 'success' | 'error'; text: string; reload?: boolean };
 type Failure = { status?: number; code: string; message: string };
+type Preview = { blogHtml: string; emailSubject: string; emailHtml: string };
 type ApiResult = { error?: unknown; response?: { status: number } };
 
 const statusLabels: Record<string, string> = {
@@ -74,7 +76,9 @@ function editorRoute(path: string, search: string) {
     runId = '';
   }
   const query = new URLSearchParams(search);
-  const tab: EditorTab = query.get('tab') === 'newsletter' ? 'newsletter' : 'blog';
+  // Links from before the email became the post itself still say tab=newsletter.
+  const requested = query.get('tab');
+  const tab: EditorTab = requested === 'email' || requested === 'newsletter' ? 'email' : 'blog';
   return { runId, token: query.get('token') ?? '', tab };
 }
 
@@ -118,18 +122,8 @@ function editedBlog(fields: BlogFields): BlogDraft {
   };
 }
 
-function editedNewsletter(draft: NewsletterDraft): NewsletterDraft {
-  return {
-    subject: draft.subject,
-    preheader: draft.preheader,
-    intro: draft.intro,
-    items: (draft.items ?? []).map((item) => ({ title: item.title, summary: item.summary })),
-    closing: draft.closing,
-  };
-}
-
-function draftKey(blog: BlogDraft, newsletter: NewsletterDraft) {
-  return JSON.stringify([blog, newsletter]);
+function previewOf(rendered: Preview): Preview {
+  return { blogHtml: rendered.blogHtml, emailSubject: rendered.emailSubject, emailHtml: rendered.emailHtml };
 }
 
 function failureOf(result: ApiResult, fallback: string, offline: string): Failure {
@@ -186,8 +180,7 @@ export function Editor({ info, path, search }: { info: ApplicationInfo; path: st
   const [loadError, setLoadError] = useState('');
   const [view, setView] = useState<DraftEditorView | null>(null);
   const [blog, setBlog] = useState<BlogFields | null>(null);
-  const [newsletter, setNewsletter] = useState<NewsletterDraft | null>(null);
-  const [preview, setPreview] = useState({ blogHtml: '', newsletterHtml: '' });
+  const [preview, setPreview] = useState<Preview>({ blogHtml: '', emailSubject: '', emailHtml: '' });
   const [previewMessage, setPreviewMessage] = useState('');
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState<Busy>(null);
@@ -198,8 +191,7 @@ export function Editor({ info, path, search }: { info: ApplicationInfo; path: st
   const show = useCallback((next: DraftEditorView) => {
     setView(next);
     setBlog(blogFields(next.blog));
-    setNewsletter(editedNewsletter(next.newsletter));
-    setPreview({ blogHtml: next.blogHtml, newsletterHtml: next.newsletterHtml });
+    setPreview(previewOf(next));
     setPreviewMessage('');
     setClosed(false);
   }, []);
@@ -240,28 +232,28 @@ export function Editor({ info, path, search }: { info: ApplicationInfo; path: st
   }, [load, runId, token]);
 
   const blogValue = useMemo(() => (blog ? editedBlog(blog) : null), [blog]);
-  const newsletterValue = useMemo(() => (newsletter ? editedNewsletter(newsletter) : null), [newsletter]);
   // Compare through the same text round trip so an untouched form is never dirty.
-  const baseline = useMemo(() => (view ? draftKey(editedBlog(blogFields(view.blog)), editedNewsletter(view.newsletter)) : ''), [view]);
-  const dirty = blogValue !== null && newsletterValue !== null && draftKey(blogValue, newsletterValue) !== baseline;
+  const baseline = useMemo(() => (view ? JSON.stringify(editedBlog(blogFields(view.blog))) : ''), [view]);
+  const dirty = blogValue !== null && JSON.stringify(blogValue) !== baseline;
   const readOnly = !view?.editable || closed;
 
   useEffect(() => {
     // Every edit invalidates earlier preview requests: only the latest one may replace the preview.
     const seq = ++previewSeq.current;
-    if (!view || !blogValue || !newsletterValue || readOnly) return;
+    if (!view || !blogValue || readOnly) return;
     if (!dirty) {
-      setPreview({ blogHtml: view.blogHtml, newsletterHtml: view.newsletterHtml });
+      setPreview(previewOf(view));
       setPreviewMessage('');
       return;
     }
     const timer = setTimeout(() => {
       const offline = 'The preview could not be updated. Check your connection.';
-      previewDraft({ path: { runId }, body: { token, blog: blogValue, newsletter: newsletterValue } })
+      previewDraft({ path: { runId }, body: { token, blog: blogValue } })
         .then((result) => {
           if (seq !== previewSeq.current) return;
           if (result.data?.valid) {
-            setPreview({ blogHtml: result.data.blogHtml, newsletterHtml: result.data.newsletterHtml });
+            // One rendering request answers both tabs, so the email and its subject never lag the post.
+            setPreview(previewOf(result.data));
             setPreviewMessage('');
           } else if (result.data) {
             setPreviewMessage(result.data.message || 'These edits cannot be previewed yet.');
@@ -274,7 +266,7 @@ export function Editor({ info, path, search }: { info: ApplicationInfo; path: st
         });
     }, PREVIEW_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [view, blogValue, newsletterValue, dirty, readOnly, runId, token]);
+  }, [view, blogValue, dirty, readOnly, runId, token]);
 
   function edited() {
     setNotice((current) => (current?.tone === 'success' ? null : current));
@@ -295,16 +287,6 @@ export function Editor({ info, path, search }: { info: ApplicationInfo; path: st
     edited();
   }
 
-  function changeNewsletter(change: Partial<NewsletterDraft>) {
-    setNewsletter((current) => current && { ...current, ...change });
-    edited();
-  }
-
-  function changeItem(index: number, change: Partial<NewsletterItem>) {
-    setNewsletter((current) => current && { ...current, items: current.items.map((item, at) => (at === index ? { ...item, ...change } : item)) });
-    edited();
-  }
-
   function refused(problem: Failure) {
     if (problem.code === 'not_in_review') {
       // A revision or retry returns the draft to review later, so offer Reload instead of a dead end.
@@ -316,11 +298,11 @@ export function Editor({ info, path, search }: { info: ApplicationInfo; path: st
   }
 
   async function save() {
-    if (!view || !blogValue || !newsletterValue || busy) return;
+    if (!view || !blogValue || busy) return;
     setBusy('saving');
     setNotice(null);
     try {
-      const result = await saveDraft({ path: { runId }, body: { token, baseVersion: view.draftVersion, blog: blogValue, newsletter: newsletterValue } });
+      const result = await saveDraft({ path: { runId }, body: { token, baseVersion: view.draftVersion, blog: blogValue } });
       if (result.data) {
         // Reload so the next save and approval use the server's version and rendering.
         await load(false, { tone: 'success', text: `Saved (version ${result.data.draftVersion})` });
@@ -375,7 +357,7 @@ export function Editor({ info, path, search }: { info: ApplicationInfo; path: st
     return `${path}?${query.toString()}`;
   }
 
-  // Switch tabs in place so unsaved edits on the other tab survive; the URL still opens the tab directly.
+  // Switch the preview in place so a tab click never reloads the page and drops unsaved edits; the URL still opens the tab directly.
   function selectTab(event: MouseEvent<HTMLAnchorElement>, next: EditorTab) {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
@@ -386,7 +368,7 @@ export function Editor({ info, path, search }: { info: ApplicationInfo; path: st
   const dexWebUrl = info.dexWebUrl && runId ? `${info.dexWebUrl.replace(/\/+$/, '')}/v2/run/BlogPost/${encodeURIComponent(runId)}` : '';
   const dexWebLink = dexWebUrl ? <a className="text-link" href={dexWebUrl}>Open in Dex Web</a> : null;
 
-  if (phase !== 'ready' || !view || !blog || !newsletter) {
+  if (phase !== 'ready' || !view || !blog) {
     return (
       <main className="editor editor-page-state">
         <p className="eyebrow">NEWSLETTER · EDITOR</p>
@@ -422,7 +404,7 @@ export function Editor({ info, path, search }: { info: ApplicationInfo; path: st
 
   const locked = readOnly || busy !== null;
   const hasDraft = view.draftVersion > 0 || view.blog.title !== '';
-  const html = tab === 'blog' ? preview.blogHtml : preview.newsletterHtml;
+  const html = tab === 'blog' ? preview.blogHtml : preview.emailHtml;
 
   return (
     <main className="editor">
@@ -441,80 +423,62 @@ export function Editor({ info, path, search }: { info: ApplicationInfo; path: st
           </p>
         )}
       </header>
-      <nav className="editor-tabs" aria-label="Draft parts">
-        <a href={tabHref('blog')} aria-current={tab === 'blog' ? 'page' : undefined} onClick={(event) => selectTab(event, 'blog')}>Blog post</a>
-        <a href={tabHref('newsletter')} aria-current={tab === 'newsletter' ? 'page' : undefined} onClick={(event) => selectTab(event, 'newsletter')}>Newsletter email</a>
-      </nav>
       {hasDraft ? (
         <div className="editor-split">
           <section className="panel" aria-labelledby="editor-edit-heading">
             <h2 id="editor-edit-heading">Edit</h2>
-            <form aria-label={tab === 'blog' ? 'Edit blog post' : 'Edit newsletter email'} onSubmit={(event) => event.preventDefault()}>
+            <form aria-label="Edit post" onSubmit={(event) => event.preventDefault()}>
               <fieldset className="editor-fields" disabled={locked}>
-                {!readOnly && <p className="editor-hint">Clear every field of a section, highlight, or item to drop it.</p>}
-                {tab === 'blog' ? (
-                  <>
-                    <Field id="blog-title" label="Title" value={blog.title} onChange={(title) => changeBlog({ title })} />
-                    <Field id="blog-subtitle" label="Subtitle" value={blog.subtitle} onChange={(subtitle) => changeBlog({ subtitle })} />
-                    <Field id="blog-summary" label="Summary" rows={3} value={blog.summary} onChange={(summary) => changeBlog({ summary })} />
-                    {blog.sections.map((section, index) => {
-                      const group = `blog-section-${index + 1}`;
+                {!readOnly && <p className="editor-hint">Clear every field of a section or highlight to drop it.</p>}
+                <Field id="blog-title" label="Title" value={blog.title} onChange={(title) => changeBlog({ title })} />
+                <Field id="blog-subtitle" label="Subtitle" value={blog.subtitle} onChange={(subtitle) => changeBlog({ subtitle })} />
+                <Field id="blog-summary" label="Summary" rows={3} value={blog.summary} onChange={(summary) => changeBlog({ summary })} />
+                {blog.sections.map((section, index) => {
+                  const group = `blog-section-${index + 1}`;
+                  return (
+                    <Group key={group} id={group} legend={`Section ${index + 1}`}>
+                      <Field id={`${group}-heading`} group={group} label="Heading" value={section.heading} onChange={(heading) => changeSection(index, { heading })} />
+                      <Field id={`${group}-paragraphs`} group={group} label="Paragraphs (blank line between paragraphs)" rows={8} value={section.paragraphs} onChange={(paragraphs) => changeSection(index, { paragraphs })} />
+                      <Field id={`${group}-bullets`} group={group} label="Bullets (one per line)" rows={4} value={section.bullets} onChange={(bullets) => changeSection(index, { bullets })} />
+                    </Group>
+                  );
+                })}
+                {blog.highlights.length > 0 && (
+                  <Group id="blog-highlights" legend="Highlights">
+                    {blog.highlights.map((highlight, index) => {
+                      const group = `blog-highlight-${index + 1}`;
                       return (
-                        <Group key={group} id={group} legend={`Section ${index + 1}`}>
-                          <Field id={`${group}-heading`} group={group} label="Heading" value={section.heading} onChange={(heading) => changeSection(index, { heading })} />
-                          <Field id={`${group}-paragraphs`} group={group} label="Paragraphs (blank line between paragraphs)" rows={8} value={section.paragraphs} onChange={(paragraphs) => changeSection(index, { paragraphs })} />
-                          <Field id={`${group}-bullets`} group={group} label="Bullets (one per line)" rows={4} value={section.bullets} onChange={(bullets) => changeSection(index, { bullets })} />
+                        <Group key={group} id={group} legend={`Highlight ${index + 1}`}>
+                          <Field id={`${group}-title`} group={group} label="Title" value={highlight.title} onChange={(title) => changeHighlight(index, { title })} />
+                          <Field id={`${group}-description`} group={group} label="Description" rows={2} value={highlight.description} onChange={(description) => changeHighlight(index, { description })} />
+                          <p className="editor-link">
+                            <span>Link (from the research, not editable): </span>
+                            {isWebLink(highlight.url) ? <a className="text-link" href={highlight.url} target="_blank" rel="noreferrer noopener">{highlight.url}</a> : <span>{highlight.url || 'none'}</span>}
+                          </p>
                         </Group>
                       );
                     })}
-                    {blog.highlights.length > 0 && (
-                      <Group id="blog-highlights" legend="Highlights">
-                        {blog.highlights.map((highlight, index) => {
-                          const group = `blog-highlight-${index + 1}`;
-                          return (
-                            <Group key={group} id={group} legend={`Highlight ${index + 1}`}>
-                              <Field id={`${group}-title`} group={group} label="Title" value={highlight.title} onChange={(title) => changeHighlight(index, { title })} />
-                              <Field id={`${group}-description`} group={group} label="Description" rows={2} value={highlight.description} onChange={(description) => changeHighlight(index, { description })} />
-                              <p className="editor-link">
-                                <span>Link (from the research, not editable): </span>
-                                {isWebLink(highlight.url) ? <a className="text-link" href={highlight.url} target="_blank" rel="noreferrer noopener">{highlight.url}</a> : <span>{highlight.url || 'none'}</span>}
-                              </p>
-                            </Group>
-                          );
-                        })}
-                      </Group>
-                    )}
-                    <Field id="blog-closing" label="Closing" rows={3} value={blog.closing} onChange={(closing) => changeBlog({ closing })} />
-                  </>
-                ) : (
-                  <>
-                    <Field id="newsletter-subject" label="Subject" value={newsletter.subject} onChange={(subject) => changeNewsletter({ subject })} />
-                    <Field id="newsletter-preheader" label="Preheader" value={newsletter.preheader} onChange={(preheader) => changeNewsletter({ preheader })} />
-                    <Field id="newsletter-intro" label="Intro" rows={4} value={newsletter.intro} onChange={(intro) => changeNewsletter({ intro })} />
-                    {newsletter.items.map((item, index) => {
-                      const group = `newsletter-item-${index + 1}`;
-                      return (
-                        <Group key={group} id={group} legend={`Item ${index + 1}`}>
-                          <Field id={`${group}-title`} group={group} label="Title" value={item.title} onChange={(title) => changeItem(index, { title })} />
-                          <Field id={`${group}-summary`} group={group} label="Summary" rows={3} value={item.summary} onChange={(summary) => changeItem(index, { summary })} />
-                        </Group>
-                      );
-                    })}
-                    <Field id="newsletter-closing" label="Closing" rows={3} value={newsletter.closing} onChange={(closing) => changeNewsletter({ closing })} />
-                  </>
+                  </Group>
                 )}
+                <Field id="blog-closing" label="Closing" rows={3} value={blog.closing} onChange={(closing) => changeBlog({ closing })} />
               </fieldset>
             </form>
           </section>
           <section className="panel editor-preview" aria-labelledby="editor-preview-heading">
+            <nav className="editor-tabs" aria-label="Preview format">
+              <a href={tabHref('blog')} aria-current={tab === 'blog' ? 'page' : undefined} onClick={(event) => selectTab(event, 'blog')}>Blog post</a>
+              <a href={tabHref('email')} aria-current={tab === 'email' ? 'page' : undefined} onClick={(event) => selectTab(event, 'email')}>Email</a>
+            </nav>
             <h2 id="editor-preview-heading">Preview (as {tab === 'blog' ? 'published' : 'emailed'})</h2>
+            <p className="editor-hint">The email sends this same post to subscribers; only the formatting differs.</p>
             {previewMessage && (
               <p className="editor-preview-message" role="status">
                 <strong>Preview not updated.</strong> {previewMessage}
               </p>
             )}
+            {tab === 'email' && <p className="editor-subject">Subject: {preview.emailSubject}</p>}
             {html ? (
-              <iframe title={tab === 'blog' ? 'Blog post preview' : 'Newsletter email preview'} srcDoc={html} sandbox="" />
+              <iframe title={tab === 'blog' ? 'Blog post preview' : 'Email preview'} srcDoc={html} sandbox="" />
             ) : (
               <div className="editor-preview-empty">Nothing to preview yet.</div>
             )}

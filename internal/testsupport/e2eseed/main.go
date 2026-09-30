@@ -38,14 +38,16 @@ import (
 	"github.com/superdurable/dex/sdk-go/dex"
 )
 
-// Seed is the JSON the Playwright editor journey reads from E2E_SEED_FILE.
+// Seed is the JSON the Playwright editor journey reads from E2E_SEED_FILE. There is one document:
+// the email is the post, so the post's title is also the subject line.
 type Seed struct {
-	RunID      string   `json:"runId"`
-	EditorPath string   `json:"editorPath"`
-	FakeURL    string   `json:"fakeUrl"`
-	DexWebURL  string   `json:"dexWebUrl"`
-	Title      string   `json:"title"`
-	Subject    string   `json:"subject"`
+	RunID      string `json:"runId"`
+	EditorPath string `json:"editorPath"`
+	FakeURL    string `json:"fakeUrl"`
+	DexWebURL  string `json:"dexWebUrl"`
+	Title      string `json:"title"`
+	// Paragraph is the first paragraph of the first section as the model wrote it; the journey replaces it.
+	Paragraph  string   `json:"paragraph"`
 	Recipients []string `json:"recipients"`
 }
 
@@ -173,7 +175,7 @@ func run(opts options) error {
 	}); err != nil {
 		return err
 	}
-	title, subject, editorURL := fmt.Sprint(view["blog-title"]), fmt.Sprint(view["newsletter-subject"]), fmt.Sprint(view["editor-url"])
+	title, editorURL := fmt.Sprint(view["blog-title"]), fmt.Sprint(view["editor-url"])
 	// The review post is the last provider effect before the run waits for an editor.
 	reviewPost := "*Draft 1 ready for review*: " + content.SlackText(title)
 	if err := poll(ctx, "the Slack review post", func() (bool, error) {
@@ -211,11 +213,18 @@ func run(opts options) error {
 	}
 	// Only the application's Worker can answer now; this proves the handover.
 	draftURL := editor.Scheme + "://" + editor.Host + "/api/drafts/" + url.PathEscape(flowID) + "?" + url.Values{"token": {editor.Query().Get("token")}}.Encode()
+	paragraph := ""
 	if err := poll(ctx, "the application's editor view", func() (bool, error) {
 		var draft struct {
 			Status       string `json:"status"`
 			Editable     bool   `json:"editable"`
 			DraftVersion int64  `json:"draftVersion"`
+			Blog         struct {
+				Title    string `json:"title"`
+				Sections []struct {
+					Paragraphs []string `json:"paragraphs"`
+				} `json:"sections"`
+			} `json:"blog"`
 		}
 		if err := getJSON(ctx, draftURL, &draft); err != nil {
 			return false, err
@@ -223,6 +232,11 @@ func run(opts options) error {
 		if draft.Status != blogpost.StatusAwaitingReview || !draft.Editable || draft.DraftVersion != 1 {
 			return false, stopPolling{fmt.Errorf("the application serves status=%s editable=%v version=%d", draft.Status, draft.Editable, draft.DraftVersion)}
 		}
+		// The journey edits the title and the first paragraph, so the draft must have both.
+		if draft.Blog.Title != title || len(draft.Blog.Sections) == 0 || len(draft.Blog.Sections[0].Paragraphs) == 0 {
+			return false, stopPolling{fmt.Errorf("the editor serves title %q and %d sections, want title %q and a first paragraph", draft.Blog.Title, len(draft.Blog.Sections), title)}
+		}
+		paragraph = draft.Blog.Sections[0].Paragraphs[0]
 		return true, nil
 	}); err != nil {
 		return err
@@ -230,7 +244,7 @@ func run(opts options) error {
 
 	seed := Seed{
 		RunID: flowID, EditorPath: editor.RequestURI(), FakeURL: opts.fakeURL, DexWebURL: configuration.DexWebURL,
-		Title: title, Subject: subject, Recipients: recipients,
+		Title: title, Paragraph: paragraph, Recipients: recipients,
 	}
 	contents, err := json.MarshalIndent(seed, "", "  ")
 	if err != nil {

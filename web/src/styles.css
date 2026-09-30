@@ -27,8 +27,8 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .editor-page-state { width: min(760px, calc(100% - 40px)); }
 .editor-meta { margin: 0; color: #aab8cc; }
 .editor-closed { margin: 10px 0 0; color: #f5d98b; font-weight: 700; }
-.editor-tabs { display: flex; gap: 8px; margin: 24px 0 0; border-bottom: 1px solid #29415d; }
-.editor-tabs a { padding: 10px 14px; border-bottom: 3px solid transparent; color: #aab8cc; font-weight: 700; text-decoration: none; }
+.editor-tabs { display: flex; gap: 8px; margin: 0 0 16px; border-bottom: 1px solid #29415d; }
+.editor-tabs a { margin-bottom: -1px; padding: 10px 14px; border-bottom: 3px solid transparent; color: #aab8cc; font-weight: 700; text-decoration: none; }
 .editor-tabs a:hover { color: #e8edf8; }
 .editor-tabs a[aria-current='page'] { border-bottom-color: #6ae4c4; color: #e8edf8; }
 .editor-tabs a:focus-visible { outline: 3px solid #e8edf8; outline-offset: 2px; }
@@ -46,8 +46,10 @@ textarea:focus-visible { outline: 2px solid #6ae4c4; outline-offset: 2px; }
 .editor-hint { margin: 0 0 14px; color: #8193ab; font-size: .88rem; }
 .editor-link { margin: 0 0 14px; color: #aab8cc; font-size: .82rem; overflow-wrap: anywhere; }
 .editor-preview { position: sticky; top: 16px; }
-.editor-preview iframe { display: block; width: 100%; height: 70vh; border: 0; border-radius: 12px; background: #fff; }
-.editor-preview-empty { display: grid; place-items: center; height: 70vh; border-radius: 12px; background: #fff; color: #4a5568; }
+/* The sticky preview also holds the tabs, the same-post note, and the subject, so the frame leaves room for them. */
+.editor-preview iframe { display: block; width: 100%; height: max(360px, calc(100vh - 280px)); border: 0; border-radius: 12px; background: #fff; }
+.editor-preview-empty { display: grid; place-items: center; height: max(360px, calc(100vh - 280px)); border-radius: 12px; background: #fff; color: #4a5568; }
+.editor-subject { margin: 0 0 12px; color: #e8edf8; font-weight: 700; overflow-wrap: anywhere; }
 .editor-preview-message { margin: 0 0 12px; color: #ff9d9d; white-space: pre-line; }
 .editor-footer { margin-top: 20px; }
 .editor-notice { margin: 0 0 14px; font-weight: 700; white-space: pre-line; }
@@ -58,4 +60,5 @@ textarea:focus-visible { outline: 2px solid #6ae4c4; outline-offset: 2px; }
 @media (max-width: 960px) {
   .editor-split { grid-template-columns: minmax(0, 1fr); }
   .editor-preview { position: static; }
+  .editor-preview iframe, .editor-preview-empty { height: 70vh; }
 }
