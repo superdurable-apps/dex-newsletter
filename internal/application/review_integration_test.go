@@ -110,9 +110,8 @@ func TestSlackThreadReviewLoop(t *testing.T) {
 		!strings.Contains(received[0].HTML, ">Connectors, revised</h1>") || !strings.HasPrefix(received[0].Text, "Connectors, revised\n") {
 		t.Fatalf("emails to %s = %+v", reader, received)
 	}
-	h.waitForSlackPost(ctx, "Newsletter sent: ")
-
 	slackPosts, _, _ := h.fake.Snapshot()
+	assertClosingPostsInOrder(t, slackPosts, "approved by <@UREVIEWER>. Sending the newsletter.")
 	for fragment, want := range map[string]int{"Thanks <@UREVIEWER>": 1, "approved by <@UREVIEWER>": 1, "I'm not waiting for a review": 1, "UOUTSIDER": 0, "ready for review*": 2} {
 		if got := countContaining(slackPosts, fragment); got != want {
 			t.Fatalf("%d Slack posts contain %q, want %d:\n%s", got, fragment, want, strings.Join(slackPosts, "\n---\n"))
@@ -350,6 +349,8 @@ func TestEditorSavesAndApprovesEditedDraft(t *testing.T) {
 	if len(received) != 1 {
 		t.Fatalf("emails to %s = %+v", reader, received)
 	}
+	slackPosts, _, _ := h.fake.Snapshot()
+	assertClosingPostsInOrder(t, slackPosts, "Draft 2 approved in the editor. Sending the newsletter.")
 	if received[0].Subject != "Connectors, edited by hand" {
 		t.Fatalf("the email subject is %q, want the edited title", received[0].Subject)
 	}
@@ -754,6 +755,25 @@ func emailsTo(emails []fakeproviders.SentEmail, address string) []fakeproviders.
 		}
 	}
 	return matching
+}
+
+// assertClosingPostsInOrder checks, once the run has completed, that the approval reply posted
+// before the closing reply and the closing reply posted last. Both post in sequence, so no Slack
+// post is left running beside the completion, which Dex can lose when it continues a run as new.
+func assertClosingPostsInOrder(t *testing.T, posts []string, approval string) {
+	t.Helper()
+	approved, sent := -1, -1
+	for index, post := range posts {
+		if strings.Contains(post, approval) {
+			approved = index
+		}
+		if strings.HasPrefix(post, "Newsletter sent: ") {
+			sent = index
+		}
+	}
+	if approved < 0 || sent != len(posts)-1 || approved > sent {
+		t.Fatalf("want %q, then the closing reply last; Slack posts:\n%s", approval, strings.Join(posts, "\n---\n"))
+	}
 }
 
 func countContaining(texts []string, fragment string) int {

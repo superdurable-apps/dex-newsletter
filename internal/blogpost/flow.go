@@ -47,6 +47,8 @@ const (
 	stepSendNewsletterEmail   = "SendNewsletterEmail"
 	stepPostSlackNotice       = "PostSlackNotice"
 	stepPostSlackReviewDraft  = "PostSlackReviewDraft"
+	stepPostSlackClosing      = "PostSlackClosingNotice"
+	stepPostSlackApproval     = "PostSlackApprovalNotice"
 
 	maxDeliveryExceptions = 50
 	maxReviewHistory      = 50
@@ -152,6 +154,9 @@ type ReviewDecision struct {
 	Kind  string `json:"kind"`
 	Round int64  `json:"round"`
 	Notes string `json:"notes,omitempty"`
+	// Notice is an approval's Slack acknowledgement. The Flow posts it before delivery starts, so it
+	// can never still be running beside the run's completion.
+	Notice string `json:"notice,omitempty"`
 }
 
 // ReviewEvent is one review decision or edit, kept for audit in Dex Web.
@@ -186,6 +191,9 @@ type DraftEditsSaved struct {
 type Outcome struct {
 	Status  string `json:"status"`
 	Message string `json:"message"`
+	// Notice is the closing Slack reply, posted before the run completes: a Step still running
+	// beside a graceful completion can lose that completion when Dex continues the run as new.
+	Notice string `json:"notice,omitempty"`
 }
 
 // Result is the Flow's completion output.
@@ -235,6 +243,7 @@ var (
 	slackReviewPost      = dex.DefineAttribute[SlackReviewPost]("slack-review-post")
 	pendingReviewPost    = dex.DefineAttribute[SlackReviewPost]("pending-slack-review-post")
 	deliveryDraft        = dex.DefineAttribute[DeliveryDraft]("delivery-draft")
+	blogOutcome          = dex.DefineAttribute[Outcome]("blog-outcome")
 	reviewDecisions      = dex.DefineChannel[ReviewDecision]("review-decisions")
 	allBlogPostAttribute = []dex.AttributeDef{
 		blogStatus, blogTopic, blogRequester, blogRequest, changeWindow, windowLabel, blogTitle, attentionStage,
@@ -242,7 +251,7 @@ var (
 		researchCursor, repositoryResearch, researchSummary, blogDraft, blogPreview, blogHTML, blogArtifactPath,
 		deliveryRecipients, deliveryProgress, deliverySummary,
 		deliveryExceptions, slackNoticeStatus, draftVersion, reviewHistory, slackReviewEvents, editorURL,
-		slackReviewPost, pendingReviewPost, deliveryDraft,
+		slackReviewPost, pendingReviewPost, deliveryDraft, blogOutcome,
 	}
 )
 
@@ -440,6 +449,26 @@ func (flow *Flow) GetSteps() []dex.StepDef {
 		})),
 		dex.DefineStep(RecordSlackReviewPost{}),
 		dex.DefineStep(FinishBlogPost{flow: flow}),
+		dex.DefineStep(slack.NewPostThreadReplyStep(slack.PostThreadReplyStepConfig[SlackNotice]{
+			StepType: stepPostSlackClosing, ConnectionName: SlackConnectionName, Connection: flow.deps.Slack,
+			Annotations: sdkgo.StepAnnotations{GroupID: "close", GroupLabel: "Close", Explanation: "Tell the Slack thread how the run ended, before the run completes."},
+			MapToOperationInput: func(notice SlackNotice) slack.PostThreadReplyInput {
+				return slack.PostThreadReplyInput{ChannelID: notice.ChannelID, ThreadTimestamp: notice.ThreadTimestamp, Text: notice.Text}
+			},
+			Sent: sdkgo.GoTo(CompleteBlogPost{}), ProviderRejected: sdkgo.GoTo(CompleteBlogPost{}),
+			Uncertain: sdkgo.GoTo(CompleteBlogPost{}), Defect: sdkgo.GoTo(CompleteBlogPost{}),
+		})),
+		dex.DefineStep(CompleteBlogPost{}),
+		dex.DefineStep(slack.NewPostThreadReplyStep(slack.PostThreadReplyStepConfig[SlackNotice]{
+			StepType: stepPostSlackApproval, ConnectionName: SlackConnectionName, Connection: flow.deps.Slack,
+			Annotations: sdkgo.StepAnnotations{GroupID: "deliver", GroupLabel: "Deliver", Explanation: "Tell the Slack thread the draft was approved, before sending the newsletter."},
+			MapToOperationInput: func(notice SlackNotice) slack.PostThreadReplyInput {
+				return slack.PostThreadReplyInput{ChannelID: notice.ChannelID, ThreadTimestamp: notice.ThreadTimestamp, Text: notice.Text}
+			},
+			Sent: sdkgo.GoTo(RecordApprovalNotice{}), ProviderRejected: sdkgo.GoTo(RecordApprovalNotice{}),
+			Uncertain: sdkgo.GoTo(RecordApprovalNotice{}), Defect: sdkgo.GoTo(RecordApprovalNotice{}),
+		})),
+		dex.DefineStep(RecordApprovalNotice{}),
 	}
 }
 
@@ -579,10 +608,7 @@ func (step ApplyRequestInterpretation) Execute(ctx dex.Context, result llmrouter
 	}
 	if !interpretation.IsBlogRequest {
 		message := "This doesn't look like a blog request, so I'm skipping it. Try: \"Write a blog post about connectors from the past 2 weeks.\""
-		return dex.GoToMany(
-			dex.MovementOf(sdkgo.StepRef[SlackNotice](stepPostSlackNotice), noticeFor(request, message)),
-			dex.MovementOf(FinishBlogPost{}, Outcome{Status: StatusNotARequest, Message: interpretation.Explanation}),
-		), nil
+		return dex.GoTo(FinishBlogPost{}, Outcome{Status: StatusNotARequest, Message: interpretation.Explanation, Notice: message}), nil
 	}
 	research := step.flow.deps.Config.Research
 	window := content.ResolveWindow(interpretation, request.ReceivedAt, research.DefaultWindowDays, research.MaxWindowDays)
@@ -635,16 +661,9 @@ func (step RecordOwnerRepositories) Execute(ctx dex.Context, result github.ListP
 	if len(cursor.Candidates) == 0 && len(cursor.Failures) > 0 {
 		return dex.GoTo(EnterNeedsAttention{}, Attention{Stage: StageListOwners, Reason: "Listing GitHub repositories failed: " + strings.Join(cursor.Failures, "; ")}), nil
 	}
-	request, err := blogRequest.Get(ctx)
-	if err != nil {
-		return nil, err
-	}
 	if len(cursor.Candidates) == 0 {
 		message := "No public repository under the configured GitHub owners changed during " + cursor.Window.Label + ", so there is nothing to write about."
-		return dex.GoToMany(
-			dex.MovementOf(sdkgo.StepRef[SlackNotice](stepPostSlackNotice), noticeFor(request, message)),
-			dex.MovementOf(FinishBlogPost{}, Outcome{Status: StatusNoChanges, Message: message}),
-		), nil
+		return dex.GoTo(FinishBlogPost{}, Outcome{Status: StatusNoChanges, Message: message, Notice: message}), nil
 	}
 	if err := candidateRepos.Set(ctx, cursor.Candidates); err != nil {
 		return nil, err
@@ -682,19 +701,12 @@ func (step ApplyRepositoryChoice) Execute(ctx dex.Context, result llmrouter.Gene
 		return nil, err
 	}
 	if len(selected) == 0 {
-		request, err := blogRequest.Get(ctx)
-		if err != nil {
-			return nil, err
-		}
 		topic, err := blogTopic.Get(ctx)
 		if err != nil {
 			return nil, err
 		}
 		message := fmt.Sprintf("None of the %d repositories that changed during %s look related to %q.", len(candidates), window.Label, topic)
-		return dex.GoToMany(
-			dex.MovementOf(sdkgo.StepRef[SlackNotice](stepPostSlackNotice), noticeFor(request, message)),
-			dex.MovementOf(FinishBlogPost{}, Outcome{Status: StatusNoChanges, Message: message}),
-		), nil
+		return dex.GoTo(FinishBlogPost{}, Outcome{Status: StatusNoChanges, Message: message, Notice: message}), nil
 	}
 	if err := selectedRepos.Set(ctx, selected); err != nil {
 		return nil, err
@@ -820,10 +832,6 @@ func (step RecordRepositoryCommits) Execute(ctx dex.Context, result github.ListC
 		return nil, err
 	}
 	if pullRequests, commits := content.ResearchTotals(research); pullRequests+commits == 0 {
-		request, err := blogRequest.Get(ctx)
-		if err != nil {
-			return nil, err
-		}
 		message := "The chosen repositories had no merged pull requests or commits during " + cursor.Window.Label + "."
 		for _, repository := range research {
 			if len(repository.Notes) > 0 {
@@ -831,10 +839,7 @@ func (step RecordRepositoryCommits) Execute(ctx dex.Context, result github.ListC
 				break
 			}
 		}
-		return dex.GoToMany(
-			dex.MovementOf(sdkgo.StepRef[SlackNotice](stepPostSlackNotice), noticeFor(request, message)),
-			dex.MovementOf(FinishBlogPost{}, Outcome{Status: StatusNoChanges, Message: message}),
-		), nil
+		return dex.GoTo(FinishBlogPost{}, Outcome{Status: StatusNoChanges, Message: message, Notice: message}), nil
 	}
 	return dex.GoTo(PrepareBlogWriting{}, RevisionRequest{}), nil
 }
@@ -1153,6 +1158,9 @@ func (step AwaitEditorDecision) Execute(ctx dex.Context, _ dex.None) (*dex.StepD
 	}
 	switch decision.Kind {
 	case decisionApprove:
+		if decision.Notice != "" {
+			return dex.GoTo(sdkgo.StepRef[SlackNotice](stepPostSlackApproval), noticeFor(request, decision.Notice)), nil
+		}
 		return dex.GoTo(StartNewsletterDelivery{}, nil), nil
 	case decisionRevise:
 		count, err := revisionCount.Get(ctx)
@@ -1174,10 +1182,8 @@ func (step AwaitEditorDecision) Execute(ctx dex.Context, _ dex.None) (*dex.StepD
 		if decision.Notes != "" {
 			outcome.Message += " " + decision.Notes
 		}
-		return dex.GoToMany(
-			dex.MovementOf(sdkgo.StepRef[SlackNotice](stepPostSlackNotice), noticeFor(request, outcome.Message)),
-			dex.MovementOf(FinishBlogPost{}, outcome),
-		), nil
+		outcome.Notice = outcome.Message
+		return dex.GoTo(FinishBlogPost{}, outcome), nil
 	}
 	// decisionRetry resumes the stage that stopped.
 	switch stage {
@@ -1259,15 +1265,8 @@ func (step StartNewsletterDelivery) Execute(ctx dex.Context, _ dex.None) (*dex.S
 		return nil, err
 	}
 	if len(recipients) == 0 {
-		request, err := blogRequest.Get(ctx)
-		if err != nil {
-			return nil, err
-		}
 		message := "Approved. The newsletter has no subscribers yet, so no email was sent."
-		return dex.GoToMany(
-			dex.MovementOf(sdkgo.StepRef[SlackNotice](stepPostSlackNotice), noticeFor(request, message)),
-			dex.MovementOf(FinishBlogPost{}, Outcome{Status: StatusSent, Message: message}),
-		), nil
+		return dex.GoTo(FinishBlogPost{}, Outcome{Status: StatusSent, Message: message, Notice: message}), nil
 	}
 	email, err := step.flow.nextEmail(ctx)
 	if err != nil {
@@ -1330,15 +1329,8 @@ func (step RecordNewsletterEmailResult) Execute(ctx dex.Context, result gmail.Se
 		}
 		return dex.GoTo(sdkgo.StepRef[OutgoingEmail](stepSendNewsletterEmail), email), nil
 	}
-	request, err := blogRequest.Get(ctx)
-	if err != nil {
-		return nil, err
-	}
 	message := "Newsletter sent: " + deliveryText(progress) + "."
-	return dex.GoToMany(
-		dex.MovementOf(sdkgo.StepRef[SlackNotice](stepPostSlackNotice), noticeFor(request, message)),
-		dex.MovementOf(FinishBlogPost{}, Outcome{Status: StatusSent, Message: message}),
-	), nil
+	return dex.GoTo(FinishBlogPost{}, Outcome{Status: StatusSent, Message: message, Notice: message}), nil
 }
 
 // dex:group group-id:slack group-label:"Slack"
@@ -1410,7 +1402,7 @@ func (RecordSlackReviewPost) Execute(ctx dex.Context, result slack.PostThreadRep
 }
 
 // dex:group group-id:close group-label:"Close"
-// dex:explanation text:"Record the final outcome and complete the run."
+// dex:explanation text:"Record the final outcome, then post the closing Slack reply or complete the run."
 type FinishBlogPost struct {
 	dex.StepDefaultsNoWaitFor[Outcome]
 	flow *Flow
@@ -1427,15 +1419,88 @@ func (FinishBlogPost) Execute(ctx dex.Context, outcome Outcome) (*dex.StepDecisi
 			return nil, err
 		}
 	}
-	title, err := blogTitle.Get(ctx)
+	if err := blogOutcome.Set(ctx, outcome); err != nil {
+		return nil, err
+	}
+	if outcome.Notice != "" {
+		request, err := blogRequest.Get(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return dex.GoTo(sdkgo.StepRef[SlackNotice](stepPostSlackClosing), noticeFor(request, outcome.Notice)), nil
+	}
+	result, err := completionResult(ctx, outcome)
 	if err != nil {
 		return nil, err
+	}
+	return dex.GracefulComplete(result), nil
+}
+
+// dex:group group-id:close group-label:"Close"
+// dex:explanation text:"Record the closing Slack reply and complete the run with its final outcome."
+type CompleteBlogPost struct {
+	dex.StepDefaultsNoWaitFor[slack.PostThreadReplyResult]
+}
+
+func (CompleteBlogPost) GetStepType() string { return "CompleteBlogPost" }
+
+func (CompleteBlogPost) GetStepOptions() *dex.StepOptions {
+	return &dex.StepOptions{ExecuteLockAttributes: []dex.AttributeLock{dex.LockAttribute(slackNoticeStatus)}}
+}
+
+func (CompleteBlogPost) Execute(ctx dex.Context, posted slack.PostThreadReplyResult) (*dex.StepDecision, error) {
+	status := "Closing Slack reply posted"
+	if posted.Branch != slack.PostThreadReplyBranchSent {
+		status = "Closing Slack reply not posted: " + failureText(posted.Branch, posted.Failure)
+	}
+	if err := slackNoticeStatus.Set(ctx, status); err != nil {
+		return nil, err
+	}
+	outcome, err := blogOutcome.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result, err := completionResult(ctx, outcome)
+	if err != nil {
+		return nil, err
+	}
+	return dex.GracefulComplete(result), nil
+}
+
+// dex:group group-id:deliver group-label:"Deliver"
+// dex:explanation text:"Record the approval reply, then start sending the newsletter."
+type RecordApprovalNotice struct {
+	dex.StepDefaultsNoWaitFor[slack.PostThreadReplyResult]
+}
+
+func (RecordApprovalNotice) GetStepType() string { return "RecordApprovalNotice" }
+
+func (RecordApprovalNotice) GetStepOptions() *dex.StepOptions {
+	return &dex.StepOptions{ExecuteLockAttributes: []dex.AttributeLock{dex.LockAttribute(slackNoticeStatus)}}
+}
+
+func (RecordApprovalNotice) Execute(ctx dex.Context, posted slack.PostThreadReplyResult) (*dex.StepDecision, error) {
+	status := "Approval reply posted"
+	if posted.Branch != slack.PostThreadReplyBranchSent {
+		status = "Approval reply not posted: " + failureText(posted.Branch, posted.Failure)
+	}
+	if err := slackNoticeStatus.Set(ctx, status); err != nil {
+		return nil, err
+	}
+	return dex.GoTo(StartNewsletterDelivery{}, nil), nil
+}
+
+// completionResult is the run's final output.
+func completionResult(ctx dex.Context, outcome Outcome) (Result, error) {
+	title, err := blogTitle.Get(ctx)
+	if err != nil {
+		return Result{}, err
 	}
 	progress, err := deliveryProgress.Get(ctx)
 	if err != nil {
-		return nil, err
+		return Result{}, err
 	}
-	return dex.GracefulComplete(Result{Status: outcome.Status, Title: title, Message: outcome.Message, Delivery: progress}), nil
+	return Result{Status: outcome.Status, Title: title, Message: outcome.Message, Delivery: progress}, nil
 }
 
 type ApproveBlogPostInput struct {
@@ -1674,7 +1739,8 @@ func (flow *Flow) ApproveEditedDraft(ctx dex.Context, input ApproveEditedDraftIn
 	if err != nil {
 		return nil, err
 	}
-	if err := queueDecision(ctx, []string{StatusAwaitingReview}, ReviewDecision{Kind: decisionApprove, Round: round}, StatusDelivering); err != nil {
+	approval := ReviewDecision{Kind: decisionApprove, Round: round, Notice: fmt.Sprintf("Draft %d approved in the editor. Sending the newsletter.", version)}
+	if err := queueDecision(ctx, []string{StatusAwaitingReview}, approval, StatusDelivering); err != nil {
 		return nil, err
 	}
 	history, err := reviewHistory.Get(ctx)
@@ -1684,15 +1750,7 @@ func (flow *Flow) ApproveEditedDraft(ctx dex.Context, input ApproveEditedDraftIn
 	if err := reviewHistory.Set(ctx, appendReviewEvent(history, ReviewEvent{At: time.Now().UTC(), Source: "editor", Action: "approved", Detail: fmt.Sprintf("version %d", version)})); err != nil {
 		return nil, err
 	}
-	request, err := blogRequest.Get(ctx)
-	if err != nil {
-		return nil, err
-	}
-	notice := noticeFor(request, fmt.Sprintf("Draft %d approved in the editor. Sending the newsletter.", version))
-	return &dex.RPCResult[DraftEditResult]{
-		Output:    DraftEditResult{Outcome: OutcomeApproved, DraftVersion: version},
-		NextSteps: []dex.StepMovement{dex.MovementOf(sdkgo.StepRef[SlackNotice](stepPostSlackNotice), notice)},
-	}, nil
+	return &dex.RPCResult[DraftEditResult]{Output: DraftEditResult{Outcome: OutcomeApproved, DraftVersion: version}}, nil
 }
 
 type SlackReviewResult struct {
@@ -1749,8 +1807,8 @@ func (flow *Flow) ReceiveSlackReview(ctx dex.Context, reply SlackReviewReply) (*
 			acknowledgement = refusal
 			break
 		}
-		decision, next, outcome = &ReviewDecision{Kind: decisionApprove, Round: round}, StatusDelivering, OutcomeApproved
-		acknowledgement = fmt.Sprintf("Draft %d approved by %s. Sending the newsletter.", version, reviewer)
+		notice := fmt.Sprintf("Draft %d approved by %s. Sending the newsletter.", version, reviewer)
+		decision, next, outcome = &ReviewDecision{Kind: decisionApprove, Round: round, Notice: notice}, StatusDelivering, OutcomeApproved
 	case (status == StatusAwaitingReview || status == StatusNeedsAttention) && command == ReviewReject:
 		decision, next, outcome = &ReviewDecision{Kind: decisionReject, Round: round, Notes: "Rejected in Slack by " + reviewer + "."}, StatusRejected, OutcomeRejected
 	case status == StatusAwaitingReview && feedback != "":

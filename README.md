@@ -141,6 +141,11 @@ emails, unsubscribe links, and the Dex Web removal Action.
   which rules out an AttributeMap for now. Dex Web Actions also run without their
   registered locks, so editor decisions carry the review round and removals go
   through a Channel.
+- The approval and closing Slack replies post in sequence, not alongside other
+  Steps: Dex can lose a pending completion when it continues a long run as new
+  while another Step is running, which leaves a sent run showing Running. A
+  thread reply in a run's last seconds can still post its acknowledgement
+  alongside completion.
 - Subscribing has no double opt-in or rate limit. Gmail's send API sets no
   `List-Unsubscribe` header.
 - The editor link is a signed capability link, posted in the Slack thread and

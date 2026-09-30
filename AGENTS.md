@@ -62,6 +62,12 @@ Slack review replies arrive through the `blog-post-review` Trigger binding and
 the `ReceiveSlackReview` RPC; they reuse the same review decisions as the Dex
 Web Actions and never call Slack from the RPC.
 
+A BlogPost run completes only from a Step with no sibling still running: post a
+closing or approval Slack reply in sequence (`PostSlackClosingNotice`,
+`PostSlackApprovalNotice`), never with `GoToMany` beside `FinishBlogPost` or
+delivery. Dex can drop a pending graceful completion when it continues a run as
+new, leaving a finished run shown as Running.
+
 After each edit batch, run the narrowest relevant Make target. Before calling
 `commit_and_push`, run `make check` successfully and include it in verification.
 If `make check` fails or cannot run, report `blocked=true`. Do not weaken, skip,
