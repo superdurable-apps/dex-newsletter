@@ -111,7 +111,9 @@ DEX_CONNECTOR_CONFIG_FILE=$PWD/.dex-dev/connectors/connections.json \
   --service-account-key path/to/service-account.json --sender newsletter@example.com
 ```
 
-Blog artifacts are written to `artifacts/blog/<run id>/<slug>-r<revision>.html`.
+Blog artifacts are written to `artifacts/blog/<run id>/<slug>-r<revision>.html`, and
+each editor save adds `<slug>-r<revision>-v<draft version>.html`. The Dex Web field
+**Blog HTML artifact** always points at the latest version, which is the one to publish.
 Set `newsletter.publicBaseUrl` to the reader-facing URL before sending real
 newsletters; a loopback URL makes unsubscribe links work only on this machine.
 
@@ -142,7 +144,7 @@ emails, unsubscribe links, and the Dex Web removal Action.
 - The editor link is a signed capability link, posted in the Slack thread and
   Dex Web: anyone who has it can edit and approve that run's draft. Put the
   editor behind your SSO before exposing it beyond a trusted team.
-- Slack feedback after manual edits revises the blog from the edited version, then
-  regenerates the newsletter from it, so manual newsletter edits are replaced.
+- Slack feedback after manual edits asks the model to revise the edited blog and
+  email, so the model may rephrase manual edits while applying the feedback.
 - The post is an HTML artifact; publishing it to a website is up to you
   (`blog.postUrlTemplate` links the newsletter to it).

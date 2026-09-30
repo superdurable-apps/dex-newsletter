@@ -88,6 +88,16 @@ func TestSlackThreadReviewLoop(t *testing.T) {
 	if len(revisions) != 1 || !strings.Contains(revisions[0], "Lead with the model picker, please.") || strings.Contains(revisions[0], "UBOT") {
 		t.Fatalf("want one revision request carrying the feedback without its mention, got %d:\n%s", len(revisions), strings.Join(revisions, "\n---\n"))
 	}
+	// The email is revised too: the newsletter writer gets the feedback and the current email.
+	var emailRevisions []string
+	for _, request := range llmRequests {
+		if strings.Contains(request, "Revise the previous email") {
+			emailRevisions = append(emailRevisions, request)
+		}
+	}
+	if len(emailRevisions) != 1 || !strings.Contains(emailRevisions[0], "Lead with the model picker, please.") || !strings.Contains(emailRevisions[0], "Previous email:") {
+		t.Fatalf("want one email revision carrying the feedback and the previous email, got %d:\n%s", len(emailRevisions), strings.Join(emailRevisions, "\n---\n"))
+	}
 
 	// Approve with any case and punctuation sends the revised newsletter.
 	h.deliverSlackReply(ctx, slackReply(thread, "UREVIEWER", "Approve."))
@@ -277,7 +287,7 @@ func TestEditorSavesAndApprovesEditedDraft(t *testing.T) {
 		view["newsletter-subject"] != "Connectors, edited in the editor" || view["draft-version"] != float64(2) {
 		t.Fatalf("after save status=%v title=%v subject=%v version=%v", view["blog-status"], view["blog-title"], view["newsletter-subject"], view["draft-version"])
 	}
-	h.waitForSlackPost(ctx, "Draft 2, edited in the editor: *Connectors, edited by hand*")
+	h.waitForSlackPost(ctx, "*Draft 2, edited in the editor*: Connectors, edited by hand")
 	view = h.waitForDisplay(ctx, flowID, "the version 2 artifact", func(view map[string]any) bool {
 		return strings.HasSuffix(fmt.Sprint(view["blog-artifact-path"]), "-v2.html")
 	})
@@ -371,7 +381,7 @@ func TestSlackApprovalSendsEditorVersion(t *testing.T) {
 	if err != nil || saved.Outcome != blogpost.OutcomeSaved || saved.DraftVersion != 2 {
 		t.Fatalf("save = %+v, %v", saved, err)
 	}
-	h.waitForSlackPost(ctx, "Draft 2, edited in the editor: *Connectors, tightened in the editor*")
+	h.waitForSlackPost(ctx, "*Draft 2, edited in the editor*: Connectors, tightened in the editor")
 
 	h.deliverSlackReply(ctx, slackReply(thread, "UREVIEWER", "approved"))
 	h.waitForSlackPost(ctx, "Approved by <@UREVIEWER>. Sending the newsletter.")

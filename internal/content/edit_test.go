@@ -251,7 +251,7 @@ func TestSlackReviewMessage(t *testing.T) {
 	}
 	editorURL := "https://news.example.com/edit/blog-post-T-C1-1.0?token=0f0f"
 	dexWebURL := "https://dex.example.com/v2/runs/blog-post-T-C1-1.0"
-	message := SlackReviewMessage(blog, "Subject: This week at Acme\n\nHello readers.", "12 merged pull requests in acme/connectors", editorURL, dexWebURL, 3)
+	message := SlackReviewMessage("*Draft 3 ready for review*: Connectors ship", blog, "Subject: This week at Acme\n\nHello readers.", "12 merged pull requests in acme/connectors", editorURL, dexWebURL)
 	for _, want := range []string{
 		"*Draft 3 ready for review*: Connectors ship\nBased on 12 merged pull requests in acme/connectors.\n",
 		"*Connectors ship*\n_Retries and more_\n\nThe short version.\n",
@@ -272,6 +272,26 @@ func TestSlackReviewMessage(t *testing.T) {
 	}
 }
 
+func TestSlackReviewMessageEscapesModelText(t *testing.T) {
+	blog := BlogDraft{
+		Title: "Hi <!channel>", Summary: "Read <https://phish.example|the notes> & more",
+		Sections:   []BlogSection{{Heading: "<@U1>", Paragraphs: []string{"<!here> now"}, Bullets: []string{"a > b"}}},
+		Highlights: []BlogHighlight{{Title: "Plain <b>", Description: "<!everyone>"}},
+		Closing:    "Bye <#C1>",
+	}
+	message := SlackReviewMessage("*Draft 1 ready for review*: title", blog, "Email <!channel>", "summary <x>", "https://news.example.com/e", "https://dex.example.com/r")
+	for _, raw := range []string{"<!channel>", "<!here>", "<!everyone>", "<https://phish.example", "<@U1>", "<#C1>", "<b>", "<x>"} {
+		if strings.Contains(message, raw) {
+			t.Errorf("message keeps Slack control text %q:\n%s", raw, message)
+		}
+	}
+	for _, escaped := range []string{"Hi &lt;!channel&gt;", "&amp; more", "a &gt; b", "Email &lt;!channel&gt;", "summary &lt;x&gt;"} {
+		if !strings.Contains(message, escaped) {
+			t.Errorf("message lacks %q:\n%s", escaped, message)
+		}
+	}
+}
+
 func TestSlackReviewMessageCutsLongDrafts(t *testing.T) {
 	blog := BlogDraft{Title: "Long", Sections: []BlogSection{{Heading: "H", Paragraphs: []string{strings.Repeat("é", 2000)}}}}
 	for len(blog.Sections) < 8 {
@@ -279,7 +299,7 @@ func TestSlackReviewMessageCutsLongDrafts(t *testing.T) {
 	}
 	newsletterText := strings.Repeat("ü", 40000)
 	editorURL := "https://news.example.com/edit/run?token=ab"
-	message := SlackReviewMessage(blog, newsletterText, "summary", editorURL, "https://dex.example.com/v2/runs/run", 1)
+	message := SlackReviewMessage("*Draft 1 ready for review*: Long", blog, newsletterText, "summary", editorURL, "https://dex.example.com/v2/runs/run")
 	if !strings.Contains(message, "\n… (cut to fit Slack; the editor has the full draft)") {
 		t.Fatal("a long draft was not marked as cut")
 	}

@@ -71,7 +71,7 @@ test('an editor edits the post and the email, saves each, and approves the saved
   await expect(approve).toBeEnabled();
   await expect(approve).toHaveAccessibleDescription('Approve and send delivers the saved version to every subscriber.');
   // The application's ApplyDraftEdits Step re-rendered the post and told the Slack thread.
-  await expect.poll(() => slackPostCount(request, seed, `Draft 2, edited in the editor: *${editedTitle}*`), { timeout: 30_000 }).toBe(1);
+  await expect.poll(() => slackPostCount(request, seed, `*Draft 2, edited in the editor*: ${editedTitle}`), { timeout: 30_000 }).toBe(1);
 
   await page.getByRole('link', { name: 'Newsletter email' }).click();
   await expect(page).toHaveURL(/[?&]tab=newsletter(&|$)/);
@@ -88,7 +88,7 @@ test('an editor edits the post and the email, saves each, and approves the saved
   await expect(page.getByText('Saved (version 3)')).toBeVisible();
   await expect(page.getByText('Status: awaiting review · draft version 3 · revisions 0')).toBeVisible();
   await expect(subject).toHaveValue(editedSubject);
-  await expect.poll(() => slackPostCount(request, seed, 'Draft 3, edited in the editor'), { timeout: 30_000 }).toBe(1);
+  await expect.poll(() => slackPostCount(request, seed, '*Draft 3, edited in the editor*'), { timeout: 30_000 }).toBe(1);
 
   await approve.click();
   await expect(page.getByText('Approved. Sending the newsletter to subscribers.')).toBeVisible();

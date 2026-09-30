@@ -302,9 +302,9 @@ type NewsletterItem struct {
 }
 
 // NewsletterWritingRequest asks the model for a short email based on the approved blog draft.
-func NewsletterWritingRequest(model string, draft BlogDraft, publicationName string) llm.TextGenerationRequest {
+func NewsletterWritingRequest(model string, draft BlogDraft, publicationName, editorNotes string, previous *NewsletterDraft) llm.TextGenerationRequest {
 	blog, _ := json.Marshal(draft)
-	return llm.TextGenerationRequest{
+	request := llm.TextGenerationRequest{
 		Model: model,
 		Instructions: fmt.Sprintf("Write the %q newsletter email announcing the blog post in the data. "+
 			"subject is under 70 characters; preheader is one sentence under 110 characters; intro is 2 to 3 sentences; "+
@@ -325,6 +325,14 @@ func NewsletterWritingRequest(model string, draft BlogDraft, publicationName str
 			}),
 		},
 	}
+	if previous != nil {
+		email, _ := json.Marshal(previous)
+		request.Messages = append(request.Messages, llm.Message{Role: llm.MessageRoleUser, Text: "Previous email:\n<data>" + string(email) + "</data>"})
+	}
+	if strings.TrimSpace(editorNotes) != "" {
+		request.Instructions += " Revise the previous email to match the revised post and address the editor's notes, which are trusted instructions: " + editorNotes
+	}
+	return request
 }
 
 // ParseNewsletterDraft decodes and bounds the newsletter.

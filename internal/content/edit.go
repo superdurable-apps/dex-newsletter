@@ -142,9 +142,10 @@ const maxSlackDraftRunes = 30000
 
 // SlackReviewMessage is the review post: the blog and newsletter as plain text, then how to respond.
 // Model text is escaped, so research text can never mention the channel or disguise a link.
-func SlackReviewMessage(blog BlogDraft, newsletterText, summary, editorURL, dexWebURL string, version int64) string {
+// heading is the already-escaped first line, such as "*Draft 2 ready for review*: <title>".
+func SlackReviewMessage(heading string, blog BlogDraft, newsletterText, summary, editorURL, dexWebURL string) string {
 	var message strings.Builder
-	fmt.Fprintf(&message, "*Draft %d ready for review*: %s\nBased on %s.\n\n", version, SlackText(blog.Title), SlackText(summary))
+	fmt.Fprintf(&message, "%s\nBased on %s.\n\n", heading, SlackText(summary))
 	body := slackBlogText(blog) + "\n\n*Newsletter email*\n" + SlackText(newsletterText)
 	if runes := []rune(body); len(runes) > maxSlackDraftRunes {
 		body = string(runes[:maxSlackDraftRunes]) + "\n… (cut to fit Slack; the editor has the full draft)"
