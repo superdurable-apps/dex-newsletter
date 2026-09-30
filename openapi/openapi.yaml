@@ -371,13 +371,13 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
     Conflict:
-      description: The request conflicts with the subscriber list.
+      description: The request conflicts with the current state (a full subscriber list, or a draft that changed or left review).
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
     Unavailable:
-      description: The subscriber list is temporarily unavailable.
+      description: The service is temporarily unavailable.
       content:
         application/json:
           schema:

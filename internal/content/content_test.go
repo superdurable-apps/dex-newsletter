@@ -117,7 +117,7 @@ func TestEvidenceBounds(t *testing.T) {
 		t.Fatalf("candidates = %+v", candidates)
 	}
 	pullRequests := PullRequestsFromPage(github.MergedPullRequestPage{PullRequests: []github.MergedPullRequest{{Number: 7, Body: strings.Repeat("x", 5000)}}}, 10)
-	if got := len([]rune(pullRequests[0].Body)); got > maxPullRequestBodyRunes+1 {
+	if got := len([]rune(pullRequests[0].Body)); got > maxPullRequestBodyRunes {
 		t.Fatalf("body has %d runes", got)
 	}
 	commits := CommitsFromPage(github.CommitPage{Commits: []github.CommitSummary{

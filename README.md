@@ -11,7 +11,12 @@ newsletter.
 4. The model writes a structured blog post. The application renders it into a
    self-contained HTML artifact, keeping only links found in the research.
 5. The model writes a newsletter email based on the post.
-6. An editor approves, revises (with notes), or rejects the draft in Dex Web.
+6. The full draft is posted to the request's Slack thread for review. Reviewers
+   reply `approve` to send it, `reject` to stop, or any feedback, which the
+   model uses to write a revised draft that is posted back for the next round.
+   Anyone can also polish the text in the pre-publish editor, which previews the
+   post and email exactly as they will ship, and approve from there. Dex Web's
+   Approve, Revise, Retry, and Reject Actions keep working.
 7. On approval, the newsletter goes to every subscriber through Gmail, one
    email per reader, each with a signed unsubscribe link. The requester's Slack
    thread follows along.
@@ -21,8 +26,8 @@ live in Dex Attributes on one long-lived `NewsletterSubscribers` Flow; there is
 no spreadsheet or database.
 
 Built from [dex-template-basic-process](https://github.com/superdurable/dex-template-basic-process)
-`v1.7.2`: Go backend with Dex Go SDK `v0.13.1`, Dex Server and CLI `v0.14.1`,
-and a React reader UI.
+`v1.7.2`: Go backend with Dex Go SDK `v0.13.1` and a React reader UI. Dex Server and CLI are
+`v0.14.2`, one patch ahead of the template's `v0.14.1`, for the Dex Web theme in connector setup frames.
 
 ## Architecture
 
@@ -72,7 +77,7 @@ Dex Web behind an authenticated proxy that injects the trusted permission header
 
 ## Run it locally
 
-Requires Go 1.25, Node 22, and Dex CLI `v0.14.1` on `PATH` (or `DEXCLI=...`).
+Requires Go 1.25, Node 22, and Dex CLI `v0.14.2` on `PATH` (or `DEXCLI=...`).
 
 ```bash
 make bootstrap
@@ -83,7 +88,9 @@ make dev-dex    # terminal 1: Dex Web at http://127.0.0.1:8842
 In Dex Web **Connections** (`http://127.0.0.1:8842/v2/connections`), set up:
 
 - `slack-workspace`: Slack app with Socket Mode, plus the **blog request channel**
-  on the `blog-post-request` Trigger binding;
+  on the `blog-post-request` Trigger binding and the same channel with its
+  **Reviewers** on the `blog-post-review` Trigger binding (only their thread
+  replies approve, reject, or give feedback);
 - `github`: GitHub OAuth app with `read:user user:email`;
 - `llm`: a Gemini API key and a default model such as `gemini/gemini-3.5-flash`;
 - `newsletter-sender`: the Gmail account that sends the newsletter.
@@ -132,5 +139,10 @@ emails, unsubscribe links, and the Dex Web removal Action.
   through a Channel.
 - Subscribing has no double opt-in or rate limit. Gmail's send API sets no
   `List-Unsubscribe` header.
+- The editor link is a signed capability link, posted in the Slack thread and
+  Dex Web: anyone who has it can edit and approve that run's draft. Put the
+  editor behind your SSO before exposing it beyond a trusted team.
+- Slack feedback after manual edits revises the blog from the edited version, then
+  regenerates the newsletter from it, so manual newsletter edits are replaced.
 - The post is an HTML artifact; publishing it to a website is up to you
   (`blog.postUrlTemplate` links the newsletter to it).

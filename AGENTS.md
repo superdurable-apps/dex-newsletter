@@ -49,9 +49,18 @@ place in the `research-cursor` and `delivery-progress` Attributes and advance
 one call at a time. Do not add SubFlows without the evolution gate and explicit
 user confirmation.
 
-Custom UI covers only the public reader pages (subscribe, subscribed,
-unsubscribe). Editors use Dex Web for every management operation; do not add
-management routes to `openapi/openapi.yaml`.
+Custom UI covers the public reader pages (subscribe, subscribed, unsubscribe)
+and one confirmed management surface: the pre-publish editor at
+`/edit/<runId>?token=…` (`/api/drafts/*`). Dex Web cannot edit a whole draft
+or render it as published, so the editor owns editing, its live preview, and
+approving the edited version. Every other management operation (runs, search,
+Approve, Revise, Retry, Reject, subscriber removal) stays in Dex Web; do not
+add other management routes to `openapi/openapi.yaml`. The editor token is a
+capability link signed per run; anyone holding it can edit and approve.
+
+Slack review replies arrive through the `blog-post-review` Trigger binding and
+the `ReceiveSlackReview` RPC; they reuse the same review decisions as the Dex
+Web Actions and never call Slack from the RPC.
 
 After each edit batch, run the narrowest relevant Make target. Before calling
 `commit_and_push`, run `make check` successfully and include it in verification.
@@ -73,7 +82,8 @@ unrelated upgrades or audit auto-fixes such as `npm audit fix`, install global
 or operating-system packages, or run remote installation scripts.
 
 This repository is an application built from template `v1.7.2`
-(`.superverse/template.json` records the origin). It publishes no template
+(`.superverse/template.json` records the origin). Dex Server and CLI run
+`v0.14.2`, one patch ahead of the template, at the user's request. It publishes no template
 releases. Advance the Dex Go SDK, `DEX_SERVER_BASELINE`, `DEX_CLI_BASELINE`, and
 the template contract test together, only when the user asks for an upgrade.
 
