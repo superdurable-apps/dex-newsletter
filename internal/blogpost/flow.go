@@ -440,7 +440,7 @@ func (flow *Flow) GetSteps() []dex.StepDef {
 		dex.DefineStep(RecordSlackNotice{}),
 		dex.DefineStep(slack.NewPostThreadReplyStep(slack.PostThreadReplyStepConfig[SlackNotice]{
 			StepType: stepPostSlackReviewDraft, ConnectionName: SlackConnectionName, Connection: flow.deps.Slack,
-			Annotations: sdkgo.StepAnnotations{GroupID: "slack", GroupLabel: "Slack", Explanation: "Post the full draft to the Slack thread for review."},
+			Annotations: sdkgo.StepAnnotations{GroupID: "review", GroupLabel: "Review", Explanation: "Post the full draft to the Slack thread for review."},
 			MapToOperationInput: func(notice SlackNotice) slack.PostThreadReplyInput {
 				return slack.PostThreadReplyInput{ChannelID: notice.ChannelID, ThreadTimestamp: notice.ThreadTimestamp, Text: notice.Text}
 			},
@@ -1356,7 +1356,7 @@ func (RecordSlackNotice) Execute(ctx dex.Context, result slack.PostThreadReplyRe
 	return dex.DeadEnd(), nil
 }
 
-// dex:group group-id:slack group-label:"Slack"
+// dex:group group-id:review group-label:"Review"
 // dex:explanation text:"Record which draft version reached the Slack thread and when, so a Slack approve counts only for a draft reviewers could read."
 type RecordSlackReviewPost struct {
 	dex.StepDefaultsNoWaitFor[slack.PostThreadReplyResult]
